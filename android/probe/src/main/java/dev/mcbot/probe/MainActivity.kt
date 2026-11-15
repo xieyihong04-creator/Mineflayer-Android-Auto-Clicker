@@ -1,39 +1,43 @@
 package dev.mcbot.probe
 
+import android.annotation.SuppressLint
 import android.app.Activity
-import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.view.Gravity
-import android.view.ViewGroup
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
-import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
-import android.widget.Button
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 import java.io.File
 import java.io.FileOutputStream
 import java.util.zip.ZipInputStream
 
 /**
- * M3 probe host. Its only job: start libnode with probe.js and show the result.
+ * M3 probe host. Its only job: start libnode with probe.js, then show the page
+ * that libnode serves on 127.0.0.1:3999 inside a WebView.
+ *
+ * The screen used to dump raw JSON, which is useless on a phone. The real UI is
+ * the page in probe.js (form + verdict + steps); this WebView exists so the app
+ * opens straight into it instead of asking the user to find a browser.
  *
  * Deliberately NOT a service: the probe is a foreground experiment, and keeping
  * it dumb avoids accidentally building the step-3 product integration before
  * the probe has proven that mineflayer can connect inside nodejs-mobile.
  *
- * Launch:
+ * Launch (all optional, the page can override them):
  *   adb shell am start -n dev.mcbot.console.probe/.MainActivity \
  *     --es host 192.168.1.10 --ei port 25565 --es auth 0 --es user Probe
  */
 class MainActivity : Activity() {
-    private lateinit var output: TextView
+    private lateinit var statusBar: TextView
+    private lateinit var web: WebView
     private val ui = Handler(Looper.getMainLooper())
     private var started = false
+    private var retries = 0
 
+    @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -42,28 +46,44 @@ class MainActivity : Activity() {
         val auth = if (intent.getStringExtra("auth") == "1") "1" else "0"
         val user = intent.getStringExtra("user") ?: "Probe"
 
-        output = TextView(this).apply {
-            setTextColor(0xFFE6EAF0.toInt())
+        statusBar = TextView(this).apply {
+            setTextColor(0xFF8E9BAB.toInt())
             textSize = 12f
-            setTextIsSelectable(true)
-            text = "extracting node bundle…\n"
+            setPadding(32, 24, 32, 16)
+            text = "正在解压 node 包…"
         }
-        val open = Button(this).apply {
-            text = "打开结果页面"
-            setOnClickListener {
-                runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("http://127.0.0.1:$STATUS_PORT/"))) }
+        web = WebView(this).apply {
+            setBackgroundColor(0xFF0E1116.toInt())
+            settings.javaScriptEnabled = true
+            settings.domStorageEnabled = true
+            settings.textZoom = 100
+            webViewClient = object : WebViewClient() {
+                override fun onPageFinished(view: WebView, url: String?) {
+                    retries = 0
+                    statusBar.text = "libnode 已就绪 · 127.0.0.1:$STATUS_PORT"
+                }
+
+                override fun onReceivedError(
+                    view: WebView,
+                    request: android.webkit.WebResourceRequest,
+                    error: android.webkit.WebResourceError
+                ) {
+                    // libnode needs a moment to bind the port; retry from the UI thread.
+                    if (retries++ < 20) {
+                        statusBar.text = "等待 libnode 监听 $STATUS_PORT…（${retries}/20）"
+                        ui.postDelayed({ view.loadUrl(pageUrl()) }, 700)
+                    } else {
+                        statusBar.text = "libnode 没有起来：看看上方日志或 adb logcat"
+                    }
+                }
             }
         }
-        val scroll = ScrollView(this).apply {
-            addView(output, ViewGroup.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        }
+
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(0xFF101418.toInt())
-            setPadding(24, 24, 24, 24)
-            gravity = Gravity.TOP
-            addView(scroll, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
-            addView(open, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+            setBackgroundColor(0xFF0E1116.toInt())
+            addView(statusBar, LinearLayout.LayoutParams(MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+            addView(web, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
         }
         setContentView(root)
 
@@ -71,44 +91,28 @@ class MainActivity : Activity() {
         Thread {
             try {
                 ensureBundle(dir)
-                ui.post { append("bundle ready: ${dir.absolutePath}\nstarting libnode…\n") }
+                ui.post { statusBar.text = "node 包已就绪，启动 libnode…" }
                 if (!started) {
                     started = true
                     val args = arrayOf("node", File(dir, "probe.js").absolutePath, host, port.toString(), auth, user)
-                    startNodeWithArguments(args)
-                    ui.post { append("\nnode exited with the value above\n") }
+                    // Blocks this thread until node exits; the UI stays alive.
+                    val code = startNodeWithArguments(args)
+                    ui.post { statusBar.text = "libnode 已退出（$code）" }
                 }
             } catch (e: Throwable) {
-                ui.post { append("FAILED: ${e.message}\n") }
+                ui.post { statusBar.text = "启动失败：${e.message}" }
             }
         }.start()
+
+        // Start polling immediately; onReceivedError drives the retries.
+        ui.postDelayed({ web.loadUrl(pageUrl()) }, 400)
     }
 
-    override fun onResume() {
-        super.onResume()
-        ui.postDelayed(poll, 1500)
-    }
+    private fun pageUrl() = "http://127.0.0.1:$STATUS_PORT/"
 
-    override fun onPause() {
-        ui.removeCallbacks(poll)
-        super.onPause()
-    }
-
-    private val poll = object : Runnable {
-        override fun run() {
-            Thread {
-                val text = runCatching {
-                    val result = File(filesDir, "node/probe-result.json")
-                    if (result.exists()) result.readText() else "no probe-result.json yet"
-                }.getOrElse { "read failed: ${it.message}" }
-                ui.post { output.text = text }
-            }.start()
-            ui.postDelayed(this, 2000)
-        }
-    }
-
-    private fun append(line: String) {
-        output.append(line)
+    override fun onDestroy() {
+        web.destroy()
+        super.onDestroy()
     }
 
     /** assets/node.zip -> filesDir/node (probe.js + pruned node_modules). */

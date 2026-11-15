@@ -51,6 +51,7 @@ src/bridge/protocol.js  协议 v1 校验与上行构造
 src/bridge/server.js    WS + 静态页面 + 指令分发
 web/                    移动端网页控制台（无构建、无外部依赖）
 android/                M2 原生外壳（WebView + specialUse 前台服务 + 原生信号桥）
+android/probe/          M3 探针：libnode + JNI 最小工程，独立于外壳，不进正式包
 docs/                   真机验收清单
 test/                   169 个 node:test 用例
 ```
@@ -119,6 +120,14 @@ M2 **不以功耗为验收项**；169 个测试通过只证明 Node 侧契约没
 `.github/workflows/android-build.yml`：push 到本分支 / PR 时用 JDK 17 + 仓库内 gradlew 构建 `assembleDebug`，显式安装 `platforms;android-35`，产物上传为 `mcbot-android-debug`（14 天）。lint 只报告不阻塞。
 
 APK 本身不入库（`.gitignore` 排除 `*.apk` 与 `android/**/build/`）；`dist/` 里放的是**手动打好的 zip 快照**，内含 `app-debug.apk` 与 `BUILD.txt`（commit、CI run、工具链、APK 的 sha256），方便不入 GitHub 的场合直接取用。它是二进制快照，不是每次构建自动更新，用前先看 `BUILD.txt` 对不对得上当前代码。
+
+## M3 探针：nodejs-mobile 可行性（门未过，第 3 步未启动）
+
+`android/probe/` 是一个**独立于外壳**的最小工程：把 `libnode.so` 拷进 jniLibs，用一段 JNI 壳调 `node::Start`，加载 `probe.js` 去 `require('mineflayer')` 并连一次服务器。结果只走 `http://127.0.0.1:3999/`（nodejs-mobile 不把 stdout 接到 logcat）。
+
+**已证明的是"同一份代码能在 Node 18.20.4 上连上"和"探针 APK 能编出来"，没证明"libnode.so 在 Android 上起得来"。** 依赖树 98 个包零原生模块；mineflayer 4.39.0 虽然声明 `engines >=22`，实测在 18.20.4 上能 spawn（1 秒内）。但 nodejs-mobile v18.20.4 是 NDK r24 构建、**4 KB 页对齐**、Node 18 已 EOL，且一个进程只能起一次 Node 不能重启。
+
+门没过的两条断言：**libnode.so 在 Android 上起得来**、**Android 上 mineflayer 能连上**。按交接单的禁止条款，`android/app` 里不会出现 libnode 相关代码，直到真机跑出 `connect.ok=true, detail="spawned"`。用法、体积数据（node.zip 7.1 MB / APK 69 MB）与两个硬风险（16 KB 页、Node 18 EOL）见 [`docs/m3-probe.md`](docs/m3-probe.md)。
 
 
 ## 功耗分级实现细节
@@ -232,7 +241,7 @@ M1 已实测：服务启动、静态页、WS 握手、非法指令拒绝、真�
 - **功率/cycle/满容量估算只进 jsonl 日志**（`logs/power-<day>.jsonl`，L0 也照写），不做界面：`DEBUG` 与遥测都不该占用 UI。
 - **测量时只能有一个采样源**：bot 内部是 10 s 一条，脚本探针是 60 s 一条；两者同时跑就是 7 次/分 vs 1 次/分，差值里会混进探针本身的开销。所以 `MCBOT_POWER_TELEMETRY=0` 关掉内部日志，`ondevice-once.sh` 启动 bot 时默认带上它，两种模式都只剩脚本的 1 次/分。
 - `fullMah` 外推只在 **30–80% 且稳定放电**时记录，充电中/低电量/字段冲突一律 `null`：`charge_counter` 的线性外推在这些区间误差会被放大，会污染容量趋势。
-- `nodejs-mobile` 打包（M3）未做，M2 继续用 Termux 跑 Node；`android/` 外壳未编译（沙箱无 Android SDK），见上文 M2 段落。
+- `nodejs-mobile` 打包（M3）**已做可行性探针，门未过**：APK 能编、依赖无原生模块、Node 18.20.4 上能连，但 libnode.so 能否在 Android 上启动必须真机验证；在此之前 M2 继续用 Termux 跑 Node，见上文 M3 段落。
 - WS 只监听 `127.0.0.1` 且无鉴权；**不要把端口暴露到局域网**。
 
 ## 风险对策落地

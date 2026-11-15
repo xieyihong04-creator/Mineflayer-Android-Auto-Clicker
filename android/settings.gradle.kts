@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "mcbot-shell"
 include(":app")
+include(":probe")

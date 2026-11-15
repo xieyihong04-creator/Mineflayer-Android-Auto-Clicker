@@ -14,3 +14,5 @@ android/local.properties
 android/.idea/
 *.apk
 *.iml
+android/probe/build/
+android/probe/.cxx/

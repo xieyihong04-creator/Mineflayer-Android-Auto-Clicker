@@ -35,8 +35,16 @@ const DEFAULTS = {
       l3SkipWhileCharging: true
     },
     thermal: {
-      // Android THERMAL_STATUS_MODERATE = 2
-      l0AtOrAbove: 2
+      // Real hardware idles at ~43 C on the body sensor, so an absolute
+      // threshold (the old MODERATE=2) would hold the bot in L0 forever.
+      // L0 triggers on the delta above a baseline learned during startup.
+      l0DeltaC: 7,
+      baselineWindowMs: 180000,
+      baselineMinSamples: 3,
+      // Selected by `type`, never by zone number (numbering is ROM-specific).
+      zoneTypes: ['quiet_therm', 'battery', 'batt_temp', 'charger_therm'],
+      // Trip points (95000), voltages (vbat) and current limits are not temps.
+      exclude: ['cpu-hw-trip', 'vbat', 'bcl-lvl', 'ibat-lvl']
     },
     // Screen state is reported by the UI (Page Visibility API in M1,
     // ACTION_SCREEN_ON/OFF in M2). Querying the system from Termux needs DUMP
@@ -235,7 +243,13 @@ function normalize (input, base = DEFAULTS) {
     errors.push('power.battery.l3ExitAbove must be > power.battery.l3Below (L3 needs hysteresis)')
     p.battery.l3ExitAbove = Math.min(100, p.battery.l3Below + 1)
   }
-  p.thermal.l0AtOrAbove = clamp(Number(p.thermal.l0AtOrAbove) || 2, 0, 6)
+  p.thermal.l0DeltaC = clamp(Number(p.thermal.l0DeltaC) || 7, 2, 25)
+  p.thermal.baselineWindowMs = clamp(Number(p.thermal.baselineWindowMs) || 180000, 10000, 3600000)
+  p.thermal.baselineMinSamples = clamp(Number(p.thermal.baselineMinSamples) || 3, 1, 1000)
+  p.thermal.zoneTypes = Array.isArray(p.thermal.zoneTypes) && p.thermal.zoneTypes.length
+    ? p.thermal.zoneTypes.map((t) => String(t))
+    : DEFAULTS.power.thermal.zoneTypes.slice()
+  p.thermal.exclude = Array.isArray(p.thermal.exclude) ? p.thermal.exclude.map((t) => String(t)) : []
   p.screen.requireClient = p.screen.requireClient !== false
   p.screen.reportStaleMs = clamp(Number(p.screen.reportStaleMs) || 600000, 10000, 3600000)
   p.idleMs = clamp(Number(p.idleMs) || 30000, 5000, 3600000)

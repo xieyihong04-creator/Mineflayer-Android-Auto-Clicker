@@ -10,7 +10,7 @@ function clock () {
   return { now: () => t, tick: (ms) => { t += ms } }
 }
 
-const awake = { battery: 80, charging: false, thermal: 0, screenOn: true, navActive: false, idle: false, powerSave: false }
+const awake = { battery: 80, charging: false, thermalDelta: 0, screenOn: true, navActive: false, idle: false, powerSave: false }
 
 test('L2 while screen is on', () => {
   const c = clock()
@@ -53,10 +53,12 @@ test('L0 at battery < 20', () => {
   assert.equal(tier.update({ ...awake, battery: 19 }), 'L0')
 })
 
-test('L0 on thermal >= MODERATE(2) and on power save', () => {
+test('L0 on thermal delta >= l0DeltaC, and a pending baseline never downgrades', () => {
   const c = clock()
   const tier = new PowerTierController({ config: makeConfig(), now: c.now })
-  assert.equal(tier.compute({ ...awake, thermal: 2 }), 'L0')
+  assert.equal(tier.compute({ ...awake, thermalDelta: 7 }), 'L0')
+  assert.equal(tier.compute({ ...awake, thermalDelta: 6.9 }), 'L2', 'below the delta threshold')
+  assert.equal(tier.compute({ ...awake, thermalDelta: null }), 'L2', 'baseline still warming up')
   assert.equal(tier.compute({ ...awake, powerSave: true }), 'L0')
 })
 
@@ -156,21 +158,21 @@ test('L3 hysteresis: l3ExitAbove is configurable', () => {
   assert.equal(tier.update({ ...awake, battery: 36 }), 'L2', 'released only above l3ExitAbove, and immediately')
 })
 
-test('charging + MODERATE thermal still goes L0 (heat does not care about the cable)', () => {
+test('charging + hot delta still goes L0 (heat does not care about the cable)', () => {
   const c = clock()
   const tier = new PowerTierController({ config: makeConfig(), now: c.now })
-  const hot = { ...awake, charging: true, thermal: 2 }
+  const hot = { ...awake, charging: true, thermalDelta: 8 }
   assert.equal(tier.update(hot), 'L2', 'debounced')
   c.tick(10000)
   assert.equal(tier.update(hot), 'L0')
-  assert.equal(tier.update({ ...awake, charging: true, thermal: 0 }), 'L2', 'cooling down is an upgrade -> immediate')
+  assert.equal(tier.update({ ...awake, charging: true, thermalDelta: 0 }), 'L2', 'cooling down is an upgrade -> immediate')
 })
 
 test('thermal L0 outranks a manual L2 override', () => {
   const c = clock()
   const tier = new PowerTierController({ config: makeConfig(), now: c.now })
   tier.setForcedMode('L2')
-  const hot = { ...awake, thermal: 3 }
+  const hot = { ...awake, thermalDelta: 12 }
   assert.equal(tier.update(hot), 'L2')
   c.tick(10000)
   assert.equal(tier.update(hot), 'L0', 'safety beats the user preference')

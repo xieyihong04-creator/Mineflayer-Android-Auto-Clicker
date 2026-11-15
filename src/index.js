@@ -1,5 +1,12 @@
 'use strict'
 
+// Opt-in protocol tracing, off by default: `MCBOT_DEBUG_PROTOCOL=1 npm start`
+// (or DEBUG=minecraft-protocol:* directly). mineflayer/minecraft-protocol read
+// DEBUG at require time, so this has to run before the first require.
+if (process.env.MCBOT_DEBUG_PROTOCOL === '1' && !process.env.DEBUG) {
+  process.env.DEBUG = 'minecraft-protocol:*'
+}
+
 const path = require('node:path')
 const { ConfigStore } = require('./config')
 const { Logger } = require('./logger')
@@ -51,12 +58,26 @@ async function main () {
   }
 
   // F7 sensor loop: battery / thermal / screen / power-save -> tier machine.
-  const source = new AndroidSignalSource()
+  const source = new AndroidSignalSource({ thermal: config.power.thermal })
   let lastMode = tier.mode
   const powerLoop = async () => {
     try {
       const signals = await source.read()
       manager.updatePower(signals)
+      // Numbers, not UI: W, cycles and the full-pack estimate land in
+      // logs/power-<day>.jsonl even at L0, where the event log is switched off.
+      logger.sample({
+        t: 'power',
+        mode: tier.mode,
+        battery: signals.battery,
+        charging: signals.charging,
+        powerSave: signals.powerSave,
+        thermalC: signals.thermalCelsius,
+        thermalBaselineC: signals.thermalBaselineC,
+        thermalDelta: signals.thermalDelta,
+        thermalZone: signals.thermalZone,
+        ...(signals.telemetry || {})
+      })
       if (tier.mode !== lastMode) lastMode = tier.mode
       server.broadcast(modeMessage(tier.snapshot))
     } catch (err) {

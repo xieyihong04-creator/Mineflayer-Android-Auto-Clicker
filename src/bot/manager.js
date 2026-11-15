@@ -52,7 +52,14 @@ class BotManager extends EventEmitter {
     this.lastPos = null
     this.lastMoveAt = now()
     this.lastConnectOptions = null
-    this.lastSignals = { battery: null, charging: false, thermal: null, powerSave: false }
+    this.lastSignals = {
+      battery: null,
+      charging: null,
+      thermal: null,
+      thermalDelta: null,
+      thermalBaselineC: null,
+      powerSave: null
+    }
     this.lastSignalTableJson = null
     this.uiClients = 0
     this.returnAfterReconnect = false
@@ -502,13 +509,39 @@ class BotManager extends EventEmitter {
       ? 'no_client'
       : (screen.source === 'ui' ? 'live' : 'unknown')
     return {
-      battery: { source: mock ? 'mock' : 'sysfs|termux-api', status: avail.battery || 'unavailable' },
+      battery: {
+        source: mock ? 'mock' : 'sysfs|termux-api',
+        status: avail.battery || 'unavailable',
+        bridge: avail.bridge || null
+      },
       // `capacity` and `status` are independent sysfs files, and both the L3
       // skip and the L3 exit depend on this one: report it separately.
       charging: { source: mock ? 'mock' : 'sysfs|termux-api', status: avail.charging || 'unavailable' },
-      thermal: { source: mock ? 'mock' : 'sysfs', status: avail.thermal || 'unavailable' },
+      // `baseline: pending` means the delta is not trusted yet (first minutes
+      // after start), so thermal cannot downgrade the tier - say it out loud.
+      thermal: {
+        source: mock ? 'mock' : 'sysfs',
+        status: avail.thermal || 'unavailable',
+        baseline: this.lastSignals.thermalBaselineC == null ? 'pending' : 'ready',
+        zone: this.lastSignals.thermalZone || null
+      },
       screen: { source: 'ui-events', status: screenStatus },
       powerSave: { source: mock ? 'mock' : 'settings', status: avail.powerSave || 'unavailable' }
+    }
+  }
+
+  /** Raw sensor values + power telemetry for /api/health and the jsonl log. */
+  powerSnapshot () {
+    const s = this.lastSignals
+    return {
+      battery: s.battery,
+      charging: s.charging,
+      powerSave: s.powerSave,
+      thermalCelsius: s.thermalCelsius == null ? null : s.thermalCelsius,
+      thermalBaselineC: s.thermalBaselineC == null ? null : s.thermalBaselineC,
+      thermalDelta: s.thermalDelta == null ? null : s.thermalDelta,
+      thermalZone: s.thermalZone || null,
+      telemetry: s.telemetry || null
     }
   }
 

@@ -319,23 +319,38 @@ function applySignals (table) {
   if (!table) return
   state.signalTable = table
   const missing = []
+  const isUnavailable = (entry) => String((entry || {}).status || '').startsWith('unavailable')
   for (const [key, label] of Object.entries(SIGNAL_LABELS)) {
     const entry = table[key] || {}
-    if (entry.status === 'unavailable') missing.push(`${label}不可用`)
+    if (isUnavailable(entry)) missing.push(`${label}不可用`)
     else if (key === 'screen' && entry.status === 'unknown') missing.push('屏幕状态未知（按灭屏处理）')
   }
   const hints = []
-  if ((table.battery || {}).status === 'unavailable') {
-    hints.push('电量需安装 Termux:API（pkg install termux-api）且允许 Termux:API 读取电池')
+  const batteryStatus = String((table.battery || {}).status || '')
+  if (batteryStatus.startsWith('unavailable')) {
+    hints.push(batteryStatus.includes('selinux')
+      ? '电量 sysfs 被 SELinux 拒绝（无 root 无解），需走 Termux:API：pkg install termux-api 并安装 Termux:API App'
+      : '电量需安装 Termux:API（pkg install termux-api）且允许 Termux:API 读取电池')
   }
-  if ((table.charging || {}).status === 'unavailable') {
+  if (String((table.charging || {}).status || '').startsWith('unavailable')) {
     hints.push('充电状态读不到：低电量仍会断开，不会跳过 L3')
   }
-  if ((table.thermal || {}).status === 'unavailable') {
-    hints.push('温度区 sysfs 不可读，L0 温度降档不会触发')
+  const thermal = table.thermal || {}
+  if (String(thermal.status || '').startsWith('unavailable')) {
+    hints.push('温度区不可读（SELinux 或无可识别 zone），L0 温度降档不会触发')
+  } else if (thermal.baseline === 'pending') {
+    hints.push('温度基线采集中，热降档暂不生效（约 3 分钟）')
+  }
+  if (String((table.powerSave || {}).status || '').startsWith('unavailable')) {
+    hints.push('省电模式读不到（settings 不可用），按未开启处理')
   }
   if (missing.length) {
     els.signalDetail.textContent = `${missing.join('、')}。${hints.join('；')}`
+    els.signalBanner.classList.remove('hidden')
+  } else if (hints.length) {
+    // Only a hint (baseline pending / power save unreadable): keep it visible,
+    // it is not "everything is fine".
+    els.signalDetail.textContent = hints.join('；')
     els.signalBanner.classList.remove('hidden')
   } else {
     els.signalBanner.classList.add('hidden')

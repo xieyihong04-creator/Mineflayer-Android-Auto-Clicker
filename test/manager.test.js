@@ -395,6 +395,46 @@ test('signal self-check: termux-api fallback is reported, not hidden', () => {
   assert.equal(manager.signalTable().battery.status, 'live(termux-api)')
 })
 
+test('signal self-check: failure reasons are preserved verbatim (selinux vs no-bridge)', () => {
+  const { manager } = makeManager()
+  manager.updatePower({
+    battery: null,
+    charging: null,
+    thermal: null,
+    thermalDelta: null,
+    thermalBaselineC: null,
+    powerSave: null,
+    thermalZone: null,
+    availability: {
+      battery: 'unavailable(selinux)',
+      charging: 'unavailable',
+      thermal: 'unavailable(selinux)',
+      powerSave: 'unavailable'
+    }
+  })
+  const table = manager.signalTable()
+  assert.equal(table.battery.status, 'unavailable(selinux)')
+  assert.equal(table.thermal.status, 'unavailable(selinux)')
+  assert.equal(table.thermal.baseline, 'pending')
+  assert.equal(table.powerSave.status, 'unavailable')
+
+  manager.updatePower({
+    battery: 66,
+    charging: false,
+    thermal: 0,
+    thermalDelta: 0.2,
+    thermalBaselineC: 43.1,
+    thermalZone: 'quiet_therm',
+    powerSave: false,
+    availability: { battery: 'live(termux-api)', charging: 'live(termux-api)', thermal: 'live', powerSave: 'live' }
+  })
+  const ready = manager.signalTable()
+  assert.equal(ready.battery.status, 'live(termux-api)')
+  assert.equal(ready.thermal.baseline, 'ready')
+  assert.equal(ready.thermal.zone, 'quiet_therm')
+  assert.equal(manager.powerSnapshot().thermalBaselineC, 43.1)
+})
+
 test('signal self-check: table is pushed once per change, not per poll', () => {
   const { manager } = makeManager()
   const pushes = []

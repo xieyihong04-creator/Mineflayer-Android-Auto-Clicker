@@ -58,6 +58,22 @@
 - 连接目标卡里显示「实际连接：<IP:端口>（SRV → <目标>）」，能直接看出拨到了哪。
 - 域名拼错会显示 `域名不存在 (NXDOMAIN)`，不用再等 40 秒去猜。
 
+### 协议版本（1.13-pre7 陷阱）
+
+mineflayer 默认 `version: false`：先 ping 服务器，拿响应里的协议号去选 minecraft-data 的版本。真机上碰到过 server 报 **389**（`1.13-pre7`）——这个别名在 minecraft-data 里没有自己的数据目录，只有 major `1.13`（393），于是 minecraft-protocol 的 serializer 直接抛：
+
+```
+Unsupported protocol version '389' (attempted to use '393' data)
+```
+
+v9 自己先 ping，只接受「有独立数据目录且协议号自洽」的版本；`389` 会退到它的 major `1.13`，再用 393 去握手（BungeeCord 这类宣称支持 `1.8.x-26.x` 的代理接受 393）。页面上因此多一行：
+
+```
+ping 172.65.211.204:25565    BungeeCord 1.8.x-26.x · protocol 775 → 26.1.2
+```
+
+有了这一行，服务器到底报什么版本、最终用了哪个版本，一眼就能看到。
+
 也可以先用 adb 预填（页面里还能改）：
 
 ```bash
@@ -142,3 +158,13 @@ adb shell am start -n dev.mcbot.console.probe/.MainActivity \
 用域名 `mcfallout.net` 连接：`srv _minecraft._tcp.mcfallout.net → jp.mcfallout.net:25565 · cloudflare`（93 ms，走的是 DoH 而不是 c-ares）、`a jp.mcfallout.net → 172.65.211.204`（20 ms），随后 `connect 172.65.211.204:25565` 真正建立到 TCPShield 入口。**域名解析这一环在真机上已经通了**，之前拨到 Cloudflare 网页地址的问题没有再出现。
 
 这次失败换了地方：服务器协商出 **1.13**，`createBot` 在构造 serializer 时找不到 `pc/1.13/blocks.json`——就是上面第 4 条裁剪 bug。与网络、nodejs-mobile、登录都无关。v8 全量保留 `pc/*` 并在构建期逐个版本验证，真机结果待下一次安装。
+
+### 第四次真机运行（2026-11-15 21:53，v8）
+
+v8 里数据齐了，`srv`/`a` 两步依旧正常（145 ms / 19 ms），但 `createBot` 改成报：
+
+```
+Unsupported protocol version '389' (attempted to use '393' data)
+```
+
+服务器在这台手机上回报的协议号是 389（`1.13-pre7`），这个别名没有独立数据目录，minecraft-data 只能给 major `1.13`（393），serializer 自检不通过。同一域名从构建机 ping 回报的却是 `BungeeCord 1.8.x-26.x` / 775，说明版本号本身也会随链路/节点变化。v9 因此不再信任 autoVersion 的选择，自己 ping 并挑一个「数据存在且协议号自洽」的版本（389 → 1.13）。

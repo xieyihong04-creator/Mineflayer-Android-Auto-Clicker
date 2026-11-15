@@ -165,14 +165,18 @@ function localIps () {
 }
 
 let mineflayer = null
+let minecraftData = null
+let minecraftProtocol = null
 try {
   mineflayer = require('mineflayer')
+  minecraftData = require('minecraft-data')
   step('require mineflayer', true, require('mineflayer/package.json').version)
 } catch (e) {
   step('require mineflayer', false, e.message)
 }
 
 try {
+  minecraftProtocol = require('minecraft-protocol')
   step('require minecraft-protocol', true, require('minecraft-protocol/package.json').version)
 } catch (e) {
   step('require minecraft-protocol', false, e.message)
@@ -311,6 +315,62 @@ function resolveServer (host, port, done) {
   )
 }
 
+// ---------------------------------------------------------------- version pick
+//
+// mineflayer's autoVersion takes the server's ping response at face value. When a
+// proxy reports a pre-release protocol (389 = 1.13-pre7, seen on device), it
+// picks that alias, which has no data directory of its own; minecraft-data then
+// serves 1.13 data and minecraft-protocol aborts with "Unsupported protocol
+// version '389' (attempted to use '393' data)". So we ping ourselves and only
+// accept a version whose data exists and whose protocol number matches,
+// falling back to the major version of the one the server reported.
+
+function versionPlayable (version) {
+  if (!minecraftData) return false
+  try {
+    const info = minecraftData.versionsByMinecraftVersion.pc[version]
+    const data = minecraftData(version)
+    return !!(info && data && data.version && data.version.version === info.version)
+  } catch (e) {
+    return false
+  }
+}
+
+function pickVersion (protocol, name) {
+  if (!minecraftData) return null
+  const mapped = minecraftData.postNettyVersionsByProtocolVersion.pc[protocol] || []
+  for (const c of mapped) if (versionPlayable(c.minecraftVersion)) return c.minecraftVersion
+  // 389 -> '1.13-pre7' has no data of its own, but its major version does.
+  for (const c of mapped) if (c.majorVersion && versionPlayable(c.majorVersion)) return c.majorVersion
+  // Only trust the advertised name when it is a bare version string; proxies
+  // advertise things like "BungeeCord 1.8.x-26.x", where a regex would pick
+  // the wrong end of the range.
+  const bare = String(name || '').trim()
+  if (/^\d+\.\d+(?:\.\d+)?$/.test(bare) && versionPlayable(bare)) return bare
+  return null
+}
+
+function resolveVersion (host, port, cb) {
+  if (!minecraftProtocol) return cb(null)
+  const started = Date.now()
+  withTimeout(minecraftProtocol.ping({ host, port, closeTimeout: 8000 }), 12000, 'ping')
+    .then(
+      (res) => {
+        const info = (res && res.version) || {}
+        const pick = pickVersion(info.protocol, info.name)
+        step('ping ' + host + ':' + port, true,
+          (info.name || '?') + ' · protocol ' + info.protocol +
+          (pick ? ' → ' + pick : ' → 没有匹配的版本数据'),
+          Date.now() - started)
+        cb(pick)
+      },
+      (e) => {
+        step('ping ' + host + ':' + port, false, e.message, Date.now() - started)
+        cb(null)
+      }
+    )
+}
+
 function connectOnce () {
   if (!mineflayer) {
     status.connect = { ok: false, detail: 'mineflayer did not load' }
@@ -342,11 +402,14 @@ function connectOnce () {
   }
   resolveServer(HOST, PORT, (host, port, note) => {
     if (cancelled) return
-    launch(host, port, note)
+    resolveVersion(host, port, (version) => {
+      if (cancelled) return
+      launch(host, port, note, version)
+    })
   })
 }
 
-function launch (host, port, note) {
+function launch (host, port, note, version) {
   // The effective socket target. When it differs from what the user typed, the
   // step list shows both, so "why is it dialling this IP" has an answer.
   status.resolved = host + ':' + port
@@ -358,6 +421,9 @@ function launch (host, port, note) {
     username: USERNAME,
     auth: wantAuth ? 'microsoft' : 'offline'
   }
+  // An explicit version stops mineflayer from re-pinging and picking an alias
+  // we cannot serve (see version pick above).
+  if (version) opts.version = version
   const label = (host + ':' + port) === (HOST + ':' + PORT)
     ? HOST + ':' + PORT
     : host + ':' + port + ' (来自 ' + HOST + ':' + PORT + ')'

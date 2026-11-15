@@ -1,6 +1,6 @@
 # Mineflayer Android Console · v0.1（M1）
 
-Android 上的 Minecraft Java 挂机 bot 控制台。内核 mineflayer，M1 交付 **Termux 直接跑 Node 服务 + localhost WebSocket + 网页 UI**，用于验证 PRD 中全部 P0 功能；M2 是**原生 WebView 外壳 + 前台服务 + 原生信号桥**（不做 Compose），M3 视需要打包 nodejs-mobile。
+Android 上的 Minecraft Java 挂机 bot 控制台。内核 mineflayer。M1 交付 **Termux 直接跑 Node 服务 + localhost WebSocket + 网页 UI**；M2 是**原生 WebView 外壳 + 前台服务 + 原生信号桥**（不做 Compose）；M3 把 nodejs-mobile 打包进 App——**装上 APK 就能挂机，不再需要 Termux**。
 
 > 项目已从 `mineflayer-android-auto-clicker` 更名为 **mineflayer-android-console**：本项目不做任何输入自动化 / 点击器，"auto-clicker" 会误导。GitHub 仓库名需在网页端同步改名（远端仓库改名不改历史）。
 
@@ -13,7 +13,13 @@ Android 外壳 (M2) ──┐   WebView 加载 127.0.0.1:<port>
                     └─ Node: mineflayer + pathfinder + 功耗调度 + 背包/进食
 ```
 
-## 快速开始（Termux）
+## 快速开始（装 APK，M3）
+
+安装 `app-debug.apk`（arm64）→ 打开 → App 自己解压内置 Node 并在 `:node` 进程启动核心 → 页面加载 `127.0.0.1:8765` → 填服务器地址、账号邮箱、勾「使用微软登录」→ 连接。
+
+首次启动要解压约 145 MB 的运行时与版本数据，页面会显示「正在启动内置 Node 核心…（n/120）」。微软登录会弹设备码，授权一次后 token 存在 `filesDir/auth`，升级覆盖安装不丢；探针 APK（另一个包名）里的缓存不会带过来。细节、进程模型与 4 条真机验收见 [`docs/m3-step3.md`](docs/m3-step3.md)。
+
+## 快速开始（Termux，M1 路径仍然可用）
 
 ```bash
 pkg install nodejs-lts
@@ -38,6 +44,7 @@ bash scripts/termux-start.sh
 ```
 src/index.js            启动：配置、功耗轮询、HTTP/WS 服务
 src/bot/manager.js      连接生命周期、退避重连、网络切换、档位副作用
+src/util/resolve.js     SRV + A 解析（系统 → DoH），握手保留用户输入的域名
 src/bot/nav.js          F4 简单寻路（禁挖/禁跑酷/禁自由移动/禁搭方块）
 src/bot/eating.js       F5 自动进食（白名单 + 黑名单，耗尽通知）
 src/bot/inventory.js    F6 到点清包（串行 300ms、容器 deposit 或岩浆丢）
@@ -50,10 +57,12 @@ src/bot/droppoint.js    丢弃点站立安全 + 可达性预检
 src/bridge/protocol.js  协议 v1 校验与上行构造
 src/bridge/server.js    WS + 静态页面 + 指令分发
 web/                    移动端网页控制台（无构建、无外部依赖）
-android/                M2 原生外壳（WebView + specialUse 前台服务 + 原生信号桥）
-android/probe/          M3 探针：libnode + JNI 最小工程，独立于外壳，不进正式包
-docs/                   真机验收清单
-test/                   169 个 node:test 用例
+android/                M2 外壳 + M3 第 3 步：WebView + specialUse FGS + 原生信号桥
+android/app/            NodeService(:node 进程) / NodeBundle / libnode JNI 壳
+android/libnode.gradle.kts  :app 与 :probe 共用的 libnode.so 下载（版本/ABI 单一来源）
+android/probe/          M3 探针：libnode + JNI 最小工程，独立 APK，不进正式包
+docs/                   真机验收清单（m3-probe.md / m3-step3.md）
+test/                   183 个 node:test 用例
 ```
 
 ## P0 验收对照
@@ -121,14 +130,15 @@ M2 **不以功耗为验收项**；169 个测试通过只证明 Node 侧契约没
 
 APK 本身不入库（`.gitignore` 排除 `*.apk` 与 `android/**/build/`）；`dist/` 里放的是**手动打好的 zip 快照**，内含 `app-debug.apk` 与 `BUILD.txt`（commit、CI run、工具链、APK 的 sha256），方便不入 GitHub 的场合直接取用。它是二进制快照，不是每次构建自动更新，用前先看 `BUILD.txt` 对不对得上当前代码。
 
-## M3 探针：nodejs-mobile 可行性（门未过，第 3 步未启动）
+## M3：nodejs-mobile（探针门已过，第 3 步已实现，4 条真机验收未验证）
 
-`android/probe/` 是一个**独立于外壳**的最小工程：把 `libnode.so` 拷进 jniLibs，用一段 JNI 壳调 `node::Start`，加载 `probe.js` 去 `require('mineflayer')` 并连一次服务器。结果只走 `http://127.0.0.1:3999/`（nodejs-mobile 不把 stdout 接到 logcat）。
+**真机结论（2026-11-15 22:06，探针 v10）**：`libnode.so` 在 arm64 Android 上能加载、执行 JS、开 127.0.0.1 端口、写文件；mineflayer 4.39.0 能在 nodejs-mobile 里 require 成功并**连上正版服 spawn**（版本 26.1、坐标 -137.6/35/912.2、2975 ms）。所以第 3 步的禁止条款解除。
 
-**真机已证明两层：libnode.so 在 arm64 Android 上能加载、执行 JS、开 127.0.0.1 端口、写文件；mineflayer 4.39.0 能在 nodejs-mobile 里 191 ms 内 require 成功并发出 TCP 连接**（探针页返回 `node 18.20.4 / platform android / arch arm64`）。依赖树 98 个包零原生模块；mineflayer 虽声明 `engines >=22`，实测在 18.20.4 上能 spawn（1 秒内）。但 nodejs-mobile v18.20.4 是 NDK r24 构建、**4 KB 页对齐**、Node 18 已 EOL，且一个进程只能起一次 Node 不能重启。
+**第 3 步做了什么**：`src/` + `node_modules` + `web/` 打成 `assets/node.zip`（解压 145 MB，zip 15.4 MB），Node 跑在私有进程 `:node`，WebView + specialUse 前台服务留在主进程；主进程每 15 s 探一次 `/api/health`，`:node` 的 Node 退出后自杀进程、看门狗拉起新进程（nodejs-mobile 一个进程只能起一次 Node，重启只能换进程），页面用 M1 已有的 WS 重连自愈。APK 80 MB（libnode.so 独占 62 MB），arm64 单 ABI。
 
-首次真机运行的失败点在**自己的打包裁剪**，不在 nodejs-mobile：`minecraft-data` 按版本名删目录会连带删掉别的版本要用的数据（`dataPaths.json` 里有交叉引用），`bedrock/common` 也在加载期被无条件 require。已改为 `prepare-bundle.js`：按 `dataPaths` 引用裁剪，并在构建期把懒加载字段、serializer、`require('mineflayer')` 全走一遍。**门剩下的一条是"Android 上 mineflayer 能连上"**，判据只有 `connect.ok=true, detail="spawned"`；在此之前 `android/app` 里不会出现 libnode 相关代码。CI 有独立 `probe` job，产物 `mcbot-m3-probe`。用法、体积数据（bundle 61 MB → node.zip 8.6 MB → APK 73.5 MB）与两个硬风险（16 KB 页、Node 18 EOL）见 [`docs/m3-probe.md`](docs/m3-probe.md)。
+**地址解析进入正式 bot**：`src/util/resolve.js` 自己做 SRV（系统 → Cloudflare DoH → Google DoH）+ A（`dns.lookup`），并且**握手包保留用户输入的域名**，只有 socket 连解析出的 IP。TCPShield/NeoProtect 这类按 hostname 路由的代理，收到 IP 会回 `Invalid hostname` 并伪造一个 `protocol 389` 的状态——这正是探针早期 1.13-pre7 报错和 `Invalid hostname` 被踢的根因。回归实测：`mcfallout.net` → `jp.mcfallout.net:25565` → BungeeCord protocol **775**，offline 登录被"正版服认证拒绝"而不是被代理拒绝。
 
+**仍未验证**：装 APK 后的 4 条（无 Termux 冷启动并 spawn、锁屏 30 分钟不掉线、杀 `:node` 自愈、覆盖安装 token 不丢）。**功耗/发热/后台存活时长既不在验收内，也没有任何测量数据。** 细节与风险见 [`docs/m3-step3.md`](docs/m3-step3.md)；探针本身的过程记录（六次真机运行、打包裁剪的三个坑）见 [`docs/m3-probe.md`](docs/m3-probe.md)。
 
 ## 功耗分级实现细节
 
@@ -241,7 +251,8 @@ M1 已实测：服务启动、静态页、WS 握手、非法指令拒绝、真�
 - **功率/cycle/满容量估算只进 jsonl 日志**（`logs/power-<day>.jsonl`，L0 也照写），不做界面：`DEBUG` 与遥测都不该占用 UI。
 - **测量时只能有一个采样源**：bot 内部是 10 s 一条，脚本探针是 60 s 一条；两者同时跑就是 7 次/分 vs 1 次/分，差值里会混进探针本身的开销。所以 `MCBOT_POWER_TELEMETRY=0` 关掉内部日志，`ondevice-once.sh` 启动 bot 时默认带上它，两种模式都只剩脚本的 1 次/分。
 - `fullMah` 外推只在 **30–80% 且稳定放电**时记录，充电中/低电量/字段冲突一律 `null`：`charge_counter` 的线性外推在这些区间误差会被放大，会污染容量趋势。
-- `nodejs-mobile` 打包（M3）**已做可行性探针，门未过**：APK 能编、依赖无原生模块、Node 18.20.4 上能连，但 libnode.so 能否在 Android 上启动必须真机验证；在此之前 M2 继续用 Termux 跑 Node，见上文 M3 段落。
+- `nodejs-mobile` 已在真机上证明能连能 spawn（探针 v10），第 3 步也已把 Node 放进 App 的 `:node` 进程；但**应用内自启/锁屏 30 分钟/杀进程自愈/覆盖安装不丢 token 四条仍未验证**。Node 18 已 EOL、mineflayer 声明 `>=22`，实测可用但升级必须锁 `package-lock.json`。
+- **挂住但不退出的 Node 不会被强杀**：主进程没有安全的跨进程 kill API，看门狗只能处理"进程已经没了"。表现为页面离线，不会无限重启（上限 10 次）。
 - WS 只监听 `127.0.0.1` 且无鉴权；**不要把端口暴露到局域网**。
 
 ## 风险对策落地

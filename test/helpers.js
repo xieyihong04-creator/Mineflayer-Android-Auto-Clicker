@@ -120,4 +120,13 @@ function makeWorldBot (blocks = {}, { pos = new FakePosition(0, 64, 0) } = {}) {
   return bot
 }
 
-module.exports = { makeConfig, FakeBot, FakePosition, fakeLogger, navStub, makeItem, makeWorldBot }
+/**
+ * Callback-style resolver stub: tests must never touch the network. It keeps
+ * the typed hostname as the address, so `connect()` behaves as before the SRV
+ * layer existed (createBot is still called synchronously).
+ */
+const resolveStub = (overrides = {}) => (host, port, cb) => {
+  cb(null, { host, address: overrides.address || host, port: overrides.port || port, via: 'test', srv: null })
+}
+
+module.exports = { makeConfig, FakeBot, FakePosition, fakeLogger, navStub, makeItem, makeWorldBot, resolveStub }

@@ -164,13 +164,27 @@ class MainActivity : Activity(), NativeSignals.Listener {
 
     // ---------------------------------------------------------------- core gate
 
-    private fun loadWhenCoreUp() {
-        showOverlay(getString(R.string.core_waiting_hint), retryEnabled = false)
+    /**
+     * Since step 3 the core is in this APK (process `:node`), started by
+     * BridgeService. First launch extracts ~130 MB of JS + minecraft-data and
+     * then boots Node, which takes a while on a phone - so poll instead of
+     * showing "start npm in Termux" once and giving up.
+     */
+    private fun loadWhenCoreUp(attempt: Int = 0) {
+        if (attempt == 0) {
+            showOverlay(getString(R.string.core_waiting_hint), retryEnabled = false)
+        } else {
+            showOverlay(getString(R.string.core_starting, attempt, CORE_WAIT_TRIES), retryEnabled = true)
+        }
         Thread {
             val health = probeHealth()
             ui.post {
                 if (health == null) {
-                    showOverlay(getString(R.string.core_waiting, port), retryEnabled = true)
+                    if (attempt < CORE_WAIT_TRIES) {
+                        ui.postDelayed({ loadWhenCoreUp(attempt + 1) }, CORE_POLL_MS)
+                    } else {
+                        showOverlay(getString(R.string.core_waiting, port), retryEnabled = true)
+                    }
                     return@post
                 }
                 val version = health.optInt("protoVersion", -1)
@@ -239,7 +253,7 @@ class MainActivity : Activity(), NativeSignals.Listener {
         AlertDialog.Builder(this)
             .setTitle(R.string.hyperos_guide)
             .setMessage(R.string.hyperos_body)
-            .setPositiveButton(R.string.open_app_settings) { _, _ -> openAppDetails("com.termux") }
+            .setPositiveButton(R.string.open_app_settings) { _, _ -> openAppDetails(packageName) }
             .setNegativeButton(R.string.close, null)
             .show()
     }
@@ -265,7 +279,7 @@ class MainActivity : Activity(), NativeSignals.Listener {
         ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIFICATIONS)
     }
 
-    /** A2: once, so HyperOS cannot freeze Termux while the screen is off. */
+    /** A2: once, so HyperOS cannot freeze the app (and the bot) while the screen is off. */
     private fun askBatteryExemptionOnce() {
         if (prefs().getBoolean(PREF_BATTERY_ASKED, false)) return
         prefs().edit().putBoolean(PREF_BATTERY_ASKED, true).apply()
@@ -290,5 +304,8 @@ class MainActivity : Activity(), NativeSignals.Listener {
         private const val PREF_BATTERY_ASKED = "batteryAsked"
         private const val REQ_NOTIFICATIONS = 41
         private const val HEARTBEAT_MS = 60000L
+        // First launch: extract the bundle + boot Node before /api/health answers.
+        private const val CORE_POLL_MS = 1500L
+        private const val CORE_WAIT_TRIES = 120
     }
 }

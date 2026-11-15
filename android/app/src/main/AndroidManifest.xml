@@ -3,6 +3,9 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- The bot core runs in this APK now; it watches interfaces for the
+         "network changed -> reconnect now" path. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Android 13+: the FGS notification is only drawn with this. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -32,6 +35,14 @@
             </intent-filter>
         </activity>
 
+        <!-- M3 step 3: libnode lives here, never in the UI process. nodejs-mobile
+             allows one Node runtime per process and cannot restart it, so a bot
+             crash must cost this process only; BridgeService supervises it. -->
+        <service
+            android:name=".NodeService"
+            android:exported="false"
+            android:process=":node" />
+
         <service
             android:name=".BridgeService"
             android:exported="false"
@@ -39,7 +50,7 @@
             tools:targetApi="34">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Keeps a localhost WebSocket bridge and the control WebView alive while the screen is off, so the Minecraft bot keeps running." />
+                android:value="Runs the in-app Node bot core, its localhost WebSocket bridge and the control WebView while the screen is off." />
         </service>
     </application>
 </manifest>

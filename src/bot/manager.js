@@ -1,9 +1,11 @@
 'use strict'
 
 const path = require('node:path')
+const net = require('node:net')
 const EventEmitter = require('node:events')
 const mineflayer = require('mineflayer')
 const { Backoff } = require('../util/backoff')
+const { resolveTarget } = require('../util/resolve')
 const { ChatStore } = require('./chat')
 const { Navigator } = require('./nav')
 const { AutoEater } = require('./eating')
@@ -29,12 +31,14 @@ const VIEW_DISTANCE = {
 }
 
 class BotManager extends EventEmitter {
-  constructor ({ configStore, logger, tier, createBot = mineflayer.createBot, now = () => Date.now(), networkWatcher = null, nav = null, screen = null }) {
+  constructor ({ configStore, logger, tier, createBot = mineflayer.createBot, now = () => Date.now(), networkWatcher = null, nav = null, screen = null, resolve = resolveTarget }) {
     super()
     this.configStore = configStore
     this.logger = logger
     this.tier = tier
     this.createBot = createBot
+    this.resolve = resolve
+    this.connectToken = 0
     this.now = now
     this.bot = null
     this.status = 'offline' // offline | connecting | online | reconnecting | suspended | halted
@@ -139,6 +143,7 @@ class BotManager extends EventEmitter {
 
   destroy () {
     this.desiredOnline = false
+    this.connectToken += 1
     this.clearTimers()
     this.networkWatcher.stop()
     this.inventory.stop()
@@ -199,7 +204,30 @@ class BotManager extends EventEmitter {
     }
 
     this.setStatus('connecting')
+    // Resolve first, then create the bot. The bot's `host` stays exactly what
+    // the user typed (the handshake serverHost): TCPShield/NeoProtect route by
+    // hostname and reject an IP with "Invalid hostname"; only the socket goes
+    // to the resolved address. See src/util/resolve.js.
+    const token = ++this.connectToken
+    this.resolve(merged.host, merged.port, (err, target) => {
+      if (token !== this.connectToken) return
+      if (err) {
+        this.lastError = err.message
+        this.logger.warn(`resolve failed: ${err.message}`)
+        this.emit('message', notifyMessage('warn', err.message))
+        this.scheduleReconnect('resolve_failed')
+        return
+      }
+      this.launch(merged, target)
+    })
+    return { ok: true }
+  }
+
+  /** Creates the bot once the address behind `merged.host` is known. */
+  launch (merged, target) {
+    const cfg = this.config
     const botOptions = {
+      // Deliberately the typed hostname, not target.address.
       host: merged.host,
       port: merged.port,
       username: merged.username,
@@ -210,7 +238,18 @@ class BotManager extends EventEmitter {
       checkTimeoutInterval: 30000,
       onMsaCode: (data) => this.onMsaCode(data)
     }
+    // Overrides minecraft-protocol's tcp_dns module, which would otherwise
+    // replace options.host with the SRV target and re-resolve via c-ares.
+    botOptions.connect = (client) => {
+      const socket = net.connect(target.port, target.address)
+      client.setSocket(socket)
+    }
     if (merged.version !== false && merged.version !== undefined) botOptions.version = merged.version
+
+    const route = target.srv
+      ? `${merged.host}:${merged.port} -> srv ${target.srv} (${target.via}) -> ${target.address}:${target.port}`
+      : `${merged.host}:${merged.port} -> ${target.address}:${target.port} (${target.via})`
+    this.logger.info(`resolved ${route}`)
 
     let bot
     try {
@@ -356,6 +395,8 @@ class BotManager extends EventEmitter {
   /** Explicit user disconnect (UI button). */
   disconnect ({ reason = 'user', keepDesired = false } = {}) {
     this.desiredOnline = keepDesired
+    // A resolution still in flight must not create a bot after this call.
+    this.connectToken += 1
     this.clearReconnectTimer()
     const bot = this.bot
     this.bot = null

@@ -1,6 +1,3 @@
-import java.net.URI
-import java.util.zip.ZipInputStream
-
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -9,9 +6,11 @@ plugins {
 // M3 probe: everything here exists to answer one question on a real device --
 // "can mineflayer connect when it runs inside nodejs-mobile?" Nothing in :app
 // depends on this module, and this module must not grow into the product.
-val libNodeVersion = "v18.20.4"
-val libNodeUrl = "https://github.com/nodejs-mobile/nodejs-mobile/releases/download/" +
-    "$libNodeVersion/nodejs-mobile-$libNodeVersion-android.zip"
+//
+// From M3 step 3 the product app also runs libnode; the download lives in
+// ../libnode.gradle.kts so both modules pin the same Node version and ABI.
+apply(from = rootProject.file("libnode.gradle.kts"))
+
 val mcVersion = (findProperty("probeMinecraftVersion") as String?) ?: "1.20.1"
 
 val libNodeDir = layout.buildDirectory.dir("libnode")
@@ -76,46 +75,6 @@ dependencies {
 }
 
 /**
- * libnode.so is not on Maven; nodejs-mobile publishes it as a zip per release.
- * Downloaded once into build/libnode, then consumed as jniLibs.
- */
-val fetchLibNode = tasks.register("fetchLibNode") {
-    outputs.dir(libNodeDir)
-    doLast {
-        val out = libNodeDir.get().asFile
-        val marker = out.resolve("bin/arm64-v8a/libnode.so")
-        if (marker.exists()) {
-            logger.lifecycle("libnode already present: ${marker.length()} bytes")
-            return@doLast
-        }
-        out.mkdirs()
-        val zip = out.resolve("nodejs-mobile.zip")
-        logger.lifecycle("downloading $libNodeUrl")
-        URI(libNodeUrl).toURL().openStream().use { input ->
-            zip.outputStream().use { input.copyTo(it) }
-        }
-        ZipInputStream(zip.inputStream().buffered()).use { zin ->
-            while (true) {
-                val entry = zin.nextEntry ?: break
-                // Only the two ABIs we ship plus the headers for the JNI shim.
-                val wanted = entry.name.startsWith("include/") ||
-                    entry.name == "bin/arm64-v8a/libnode.so" ||
-                    entry.name == "bin/x86_64/libnode.so"
-                if (wanted && !entry.isDirectory) {
-                    val target = out.resolve(entry.name)
-                    target.parentFile.mkdirs()
-                    target.outputStream().use { zin.copyTo(it) }
-                }
-                zin.closeEntry()
-            }
-        }
-        zip.delete()
-        check(out.resolve("bin/arm64-v8a/libnode.so").exists()) { "libnode.so arm64-v8a missing in release zip" }
-        check(out.resolve("include/node/node.h").exists()) { "node.h missing in release zip" }
-    }
-}
-
-/**
  * Installs the production dependency tree (mineflayer), prunes minecraft-data
  * to a single version, and drops probe.js next to node_modules.
  */
@@ -124,6 +83,7 @@ val bundleNode = tasks.register<Exec>("bundleNode") {
     inputs.file(repoRoot.resolve("package.json"))
     inputs.file(repoRoot.resolve("package-lock.json"))
     inputs.file(repoRoot.resolve("android/probe/src/main/js/probe.js"))
+    inputs.file(rootProject.projectDir.resolve("libnode.gradle.kts"))
     outputs.dir(nodeBundleDir)
     commandLine(
         "bash",
@@ -144,5 +104,6 @@ val nodeAsset = tasks.register<Zip>("nodeAsset") {
 }
 
 tasks.named("preBuild") {
-    dependsOn(fetchLibNode, nodeAsset)
+    // Registered by libnode.gradle.kts.
+    dependsOn("fetchLibNode", nodeAsset)
 }

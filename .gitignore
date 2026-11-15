@@ -16,3 +16,4 @@ android/.idea/
 *.iml
 android/probe/build/
 android/probe/.cxx/
+android/app/.cxx/

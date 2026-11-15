@@ -17,7 +17,12 @@ const { BridgeServer } = require('./bridge/server')
 const { modeMessage } = require('./bridge/protocol')
 
 const ROOT = path.join(__dirname, '..')
-const CONFIG_PATH = process.env.MCBOT_CONFIG || path.join(ROOT, 'config.json')
+// On Android the code lives in assets/node.zip, which is re-extracted whenever
+// the bundle changes. Anything that must survive an APK update (config, logs,
+// Microsoft tokens) goes to MCBOT_STATE_DIR = the app's filesDir instead.
+const STATE_DIR = process.env.MCBOT_STATE_DIR ? path.resolve(process.env.MCBOT_STATE_DIR) : ROOT
+const CONFIG_PATH = process.env.MCBOT_CONFIG || path.join(STATE_DIR, 'config.json')
+const LOG_DIR = process.env.MCBOT_LOG_DIR || path.join(STATE_DIR, 'logs')
 const POWER_POLL_MS = Number(process.env.MCBOT_POWER_POLL_MS || 10000)
 // Power telemetry to jsonl normally rides on the 10s poll. For on-device
 // measurement runs it has to be off: the script's own 60s probe is then the
@@ -34,8 +39,15 @@ async function main () {
     process.exit(1)
   }
 
+  // `profilesFolder: './.auth'` would resolve against the CWD, which is `/` for
+  // a process started by Android's libnode. Pin it inside the state dir so the
+  // Microsoft token cache is found again after an upgrade.
+  if (process.env.MCBOT_STATE_DIR && !path.isAbsolute(config.auth.profilesFolder)) {
+    config.auth.profilesFolder = path.join(STATE_DIR, 'auth')
+  }
+
   const logger = new Logger({
-    dir: path.join(ROOT, 'logs'),
+    dir: LOG_DIR,
     fileEnabled: config.power.logToFile,
     mirrorConsole: process.env.MCBOT_QUIET !== '1'
   })

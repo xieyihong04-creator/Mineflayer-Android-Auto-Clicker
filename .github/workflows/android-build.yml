@@ -28,8 +28,14 @@ jobs:
 
       # ubuntu-latest ships some platforms but not necessarily the one
       # compileSdk asks for; installing explicitly keeps the build reproducible.
-      - name: Install SDK platform 35
-        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null; "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" "platform-tools"
+      # The NDK is needed since M3 step 3: the app loads libnode through its own
+      # JNI shim, exactly like the probe.
+      - name: Install SDK platform 35 + NDK
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-35" "build-tools;35.0.0" "platform-tools" \
+            "ndk;27.0.12077973" "cmake;3.22.1"
 
       - name: Build debug APK
         # The wrapper is committed, so CI and a local build use the same Gradle.

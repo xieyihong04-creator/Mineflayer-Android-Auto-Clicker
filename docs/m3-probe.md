@@ -208,9 +208,9 @@ libnode 已就绪 · 127.0.0.1:3999
 
 **门过之后仍属"假设，未测量"的**：nodejs-mobile 常驻下的耗电、发热、后台存活时长。探针只证明"能连上"，没有测"连多久"。
 
-### 这一步之后要做什么
+### 这一步之后
 
-交接单第 3–6 步现在可以按顺序推进：`src/index.js` 在 FGS 里启动（不碰 WebView/WS）→ `src` + `node_modules` 打进 assets（沿用探针这份 `prepare-bundle.js` 的裁剪与校验）→ Node 生命周期跟 FGS 绑定（一个进程只起一次，崩溃不进程内重启）→ 真机验收。
+第 3–6 步已按顺序落地，见 [`m3-step3.md`](m3-step3.md)：`src/index.js` 在 `:node` 进程里启动（不碰 WebView/WS）→ `src` + `web` + `node_modules` 打进 assets（沿用本文这份 `prepare-bundle.js` 的裁剪与校验）→ Node 生命周期跟主进程的 FGS 绑定（退出即换进程，不在原进程重启）→ 4 条真机验收待跑。
 
-第一件要落实的约束：**探针和正式 App 会各自解压一份 node 包**。合并时只能留一份，且解压目录必须从 `files/node` 改到正式 App 的目录，同时把 `files/auth` 的 token 缓存路径带过去——否则升级一次就掉登录。
+当初记下的那条约束也处理了：正式 App 的 APK 里只有一个 `libnode.so` 和一个 `node.zip`，解压目录换成 App 自己的 `filesDir/node`，而 token 缓存放在 `filesDir/auth`（bundle 之外，重解压不会动它）。
 

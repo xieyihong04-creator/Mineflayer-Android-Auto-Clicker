@@ -9,7 +9,7 @@ const { BridgeServer } = require('../src/bridge/server')
 const { BotManager } = require('../src/bot/manager')
 const { PowerTierController } = require('../src/power/tier')
 const { normalize } = require('../src/config')
-const { FakeBot, makeConfig, fakeLogger, navStub } = require('./helpers')
+const { FakeBot, makeConfig, fakeLogger, navStub, resolveStub } = require('./helpers')
 
 function httpGet (port, pathname) {
   return new Promise((resolve, reject) => {
@@ -94,7 +94,8 @@ async function setup (t) {
       bots.push(bot)
       return bot
     },
-    networkWatcher: { start: () => {}, stop: () => {} }
+    networkWatcher: { start: () => {}, stop: () => {} },
+    resolve: resolveStub()
   })
   tier.onChange = (mode, prev) => manager.applyModeActions(mode, prev)
   manager.start()

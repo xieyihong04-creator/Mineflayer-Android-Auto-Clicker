@@ -5,9 +5,9 @@ const assert = require('node:assert/strict')
 const { BotManager } = require('../src/bot/manager')
 const { PowerTierController } = require('../src/power/tier')
 const { deepMerge } = require('../src/config')
-const { FakeBot, makeConfig, fakeLogger, navStub } = require('./helpers')
+const { FakeBot, makeConfig, fakeLogger, navStub, resolveStub } = require('./helpers')
 
-function makeManager (configPatch = {}, { createBot, nav, now } = {}) {
+function makeManager (configPatch = {}, { createBot, nav, now, resolve } = {}) {
   const config = makeConfig({
     server: { host: 'mc.example.com', port: 25565, username: 'Tester' },
     ...configPatch
@@ -34,7 +34,8 @@ function makeManager (configPatch = {}, { createBot, nav, now } = {}) {
       bots.push(bot)
       return bot
     }),
-    networkWatcher: { start: () => {}, stop: () => {} }
+    networkWatcher: { start: () => {}, stop: () => {} },
+    resolve: resolve || resolveStub()
   })
   tier.onChange = (mode, prev, meta) => manager.applyModeActions(mode, prev, meta)
   return { manager, store, logger, tier, bots }
@@ -519,4 +520,66 @@ test('M2: native isPowerSaveMode overrides the unreadable settings value', () =>
   assert.equal(row.status, 'live')
   assert.equal(manager.powerSnapshot().powerSaveNative, true)
   assert.equal(c.now(), 11000)
+})
+
+test('M3: the handshake keeps the typed hostname, only the socket follows DNS/SRV', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] })
+  const seen = []
+  const { manager } = makeManager({}, {
+    createBot: (options) => {
+      seen.push(options)
+      return new FakeBot()
+    },
+    // Simulates mcfallout.net: SRV points at another name, which resolves to an IP.
+    resolve: (host, port, cb) => cb(null, {
+      host,
+      address: '172.65.211.204',
+      port: 25565,
+      via: 'cloudflare',
+      srv: 'jp.example.net:25565'
+    })
+  })
+  t.after(() => manager.destroy())
+  manager.connect()
+
+  assert.equal(seen.length, 1)
+  assert.equal(seen[0].host, 'mc.example.com', 'handshake serverHost must stay the typed domain')
+  assert.equal(typeof seen[0].connect, 'function', 'tcp_dns must be bypassed')
+})
+
+test('M3: a resolution failure reconnects instead of hanging', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] })
+  const bots = []
+  const { manager, logger } = makeManager({}, {
+    createBot: () => {
+      bots.push(new FakeBot())
+      return new FakeBot()
+    },
+    resolve: (host, port, cb) => cb(new Error('域名不存在或无法解析：mc.example.com'))
+  })
+  t.after(() => manager.destroy())
+  assert.equal(manager.connect().ok, true)
+  assert.equal(bots.length, 0)
+  assert.equal(manager.status, 'reconnecting')
+  assert.match(manager.lastError, /域名不存在或无法解析/)
+  assert.ok(logger.entries.some(([, msg]) => String(msg).includes('resolve failed')))
+  t.mock.timers.tick(1000)
+  assert.equal(manager.status, 'reconnecting')
+})
+
+test('M3: disconnect during resolution never creates a bot', () => {
+  let release = null
+  const bots = []
+  const { manager } = makeManager({}, {
+    createBot: () => {
+      bots.push(new FakeBot())
+      return new FakeBot()
+    },
+    resolve: (host, port, cb) => { release = () => cb(null, { host, address: '203.0.113.9', port, via: 'a', srv: null }) }
+  })
+  manager.connect()
+  manager.disconnect()
+  release()
+  assert.equal(bots.length, 0)
+  assert.equal(manager.status, 'offline')
 })

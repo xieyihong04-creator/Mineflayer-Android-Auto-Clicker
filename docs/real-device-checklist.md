@@ -7,7 +7,8 @@
 **第 1、2 条和第 8 条的 30 分钟采样可以一条命令跑完**：
 
 ```bash
-bash scripts/ondevice-once.sh          # 端口默认读 config.json，可用 MCBOT_PORT=18770 覆盖
+bash scripts/ondevice-once.sh --baseline   # 先跑：不跑 bot，30 min（减数）
+bash scripts/ondevice-once.sh              # 再跑：登录并 spawn 后才开始计时，30 min（被减数）
 ```
 
 它会检桥、打硬件档案（机型/ROM/`power_supply`/白名单温度）、起 bot 并提示设备码、后台采 30 分钟功率，最后产出 `logs/ondevice-<时间>/report.txt`。探针参数（60 s × 30 次 + wake-lock）是固定的，别改，否则和后续对照测量没法抵消开销。
@@ -90,7 +91,9 @@ bash scripts/ondevice-once.sh          # 端口默认读 config.json，可用 MC
 
 - **步骤**：① 手机充满、熄屏、飞行模式关、仅挂充电器待机 1 小时 → 记录电量差（baseline）。② 装 bot、同样条件 1 小时 → 记录差值。
 - **通过**：**增量 `<0.5%/h`（≈0.14 W）**，且这是待校准目标不是已知结论。PRD 原来的 `<3%/h` 已作废：本机满容量 7100 mAh / 27.4 Wh，3%/h = 0.82 W，比整机熄屏 baseline 还高，达标没有意义。
-- **算法**：增量 = 开 bot 的功率中位数 − 同条件 baseline 中位数；两者都要同一探针参数（60 s × 30 次）、同一机型温度区间。`logs/power-<day>.jsonl` 里有每 10 s 一条的原始 W/cycle/满容量估算。
+- **算法**：增量 = 开 bot 的功率中位数 − 同条件 baseline 中位数；两次都必须是 60 s × 30 次、都熄屏、都不碰手机、都不充电。bot-ON 轮要等 **spawn 之后**才开始计时，否则登录/加载世界的尖峰会被算进中位数。
+- **只有一个采样源**：测量期间 bot 内部 10 s 功率日志用 `MCBOT_POWER_TELEMETRY=0` 关掉（脚本已默认带上），否则 bot-ON 比 baseline 多 6 次/分的 `termux-battery-status` 进程开销，差值不可解释。
+- **不要用单帧**：亮屏敲命令时采到的一帧（例如 1.92 W）不是待机值，永远不能和熄屏 baseline 相减。
 - **建议**：同一晚跑两次取平均；把 `power.stateHz`、`viewDistance.l0` 作为两组对照。
 
 ## 9. RSS 实测（对 150MB 那条线）

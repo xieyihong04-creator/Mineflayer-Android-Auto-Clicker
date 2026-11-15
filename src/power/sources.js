@@ -104,6 +104,12 @@ function chargingFromApi (data) {
 }
 
 /** Power telemetry for the jsonl log; never shown in the UI. */
+function stableDischarge (data) {
+  const plugged = String(data.plugged || '').toUpperCase()
+  const status = String(data.status || '').toUpperCase()
+  return plugged.includes('UNPLUGGED') && status === 'DISCHARGING'
+}
+
 function telemetryFromApi (data) {
   const mv = Number(data.voltage)
   const ua = Number(data.current)
@@ -113,9 +119,13 @@ function telemetryFromApi (data) {
   const watts = voltageV !== null && Number.isFinite(ua)
     ? Math.round(Math.abs(voltageV * (ua / 1e6)) * 1000) / 1000
     : null
-  // charge_counter is uAh; pct is 0-100. Extrapolating to 100% gives the full
-  // pack estimate, which is the only way to turn watts into %/h.
-  const fullMah = Number.isFinite(chargeCounterUah) && pct > 0
+  // charge_counter is uAh; pct is 0-100. Extrapolating to 100% only holds while
+  // the pack is discharging steadily in its flat mid-range: outside 30-80%, or
+  // while charging, the estimate is noisy enough to corrupt a capacity trend.
+  // "Not charging" is not enough: a plugged-but-discharging (thermal throttle)
+  // or conflicting reading must not feed the capacity trend either.
+  const discharging = stableDischarge(data)
+  const fullMah = discharging && pct >= 30 && pct <= 80 && Number.isFinite(chargeCounterUah) && chargeCounterUah > 0
     ? Math.round(((chargeCounterUah / 1000) / (pct / 100)) * 10) / 10
     : null
   const energyWh = fullMah !== null && voltageV !== null
@@ -469,5 +479,6 @@ module.exports = {
   thermalStatusFromDelta,
   normalizeTemp,
   chargingFromApi,
+  stableDischarge,
   DEFAULT_THERMAL
 }

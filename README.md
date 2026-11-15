@@ -49,7 +49,7 @@ src/bridge/protocol.js  协议 v1 校验与上行构造
 src/bridge/server.js    WS + 静态页面 + 指令分发
 web/                    移动端网页控制台（无构建、无外部依赖）
 docs/                   真机验收清单
-test/                   161 个 node:test 用例
+test/                   162 个 node:test 用例
 ```
 
 ## P0 验收对照
@@ -150,13 +150,14 @@ P1 也做了最小版本：挂机点记录/返回、事件通知（掉线/死亡
 ## 开发与验证
 
 ```bash
-npm test          # 161 个用例：档位状态机/迟滞/不对称去抖/亮屏权威/信号三态/白名单温度/基线增量/退避/协议/背包安全/丢弃点预检/重生熔断/桥接端到端
+npm test          # 162 个用例：档位状态机/迟滞/不对称去抖/亮屏权威/信号三态/白名单温度/基线增量/退避/协议/背包安全/丢弃点预检/重生熔断/桥接端到端
 npm run check     # 全量 node --check
 MCBOT_MOCK_POWER='{"battery":15,"screenOn":false}' npm start   # 不插真机也能看档位
 MCBOT_DEBUG_PROTOCOL=1 npm start                               # 协议层追踪（默认关，很吵）
 
-# 真机（Termux）：一条命令完成检桥 + 硬件档案 + 30 分钟功率采样 + report.txt
-bash scripts/ondevice-once.sh
+# 真机（Termux）：两次 30 分钟，同一探针、同一熄屏条件，分别产出 report.txt
+bash scripts/ondevice-once.sh --baseline   # 不跑 bot（减数）
+bash scripts/ondevice-once.sh              # 登录后熄屏（被减数），自动配对最近一次 baseline
 # 只读诊断（不起 bot）：Termux:API / power_supply / thermal 白名单一次打全
 bash scripts/termux-signal-probe.sh 18770
 ```
@@ -174,6 +175,8 @@ M1 已实测：服务启动、静态页、WS 握手、非法指令拒绝、真�
 - **功耗目标改为 `<0.5%/h` 的“增量”**（≈0.14 W），不再是 PRD 的 `<3%/h`：本机满容量约 7100 mAh / 27.4 Wh，3%/h = 0.82 W，比整机熄屏 baseline 还高，达标没有意义。增量 = 开 bot 的 30 分钟功率中位数 − 同条件熄屏 baseline 中位数，**待实测校准**。
 - `RSS < 150MB`、`72h 连续在线` 仍属实测指标，当前环境无法测；`MCBOT_MOCK_POWER` 可让档位逻辑在真机上做 A/B。
 - **功率/cycle/满容量估算只进 jsonl 日志**（`logs/power-<day>.jsonl`，L0 也照写），不做界面：`DEBUG` 与遥测都不该占用 UI。
+- **测量时只能有一个采样源**：bot 内部是 10 s 一条，脚本探针是 60 s 一条；两者同时跑就是 7 次/分 vs 1 次/分，差值里会混进探针本身的开销。所以 `MCBOT_POWER_TELEMETRY=0` 关掉内部日志，`ondevice-once.sh` 启动 bot 时默认带上它，两种模式都只剩脚本的 1 次/分。
+- `fullMah` 外推只在 **30–80% 且稳定放电**时记录，充电中/低电量/字段冲突一律 `null`：`charge_counter` 的线性外推在这些区间误差会被放大，会污染容量趋势。
 - `nodejs-mobile` 打包（M3）未做，M2 继续用 Termux。
 - WS 只监听 `127.0.0.1` 且无鉴权；**不要把端口暴露到局域网**。
 

@@ -275,6 +275,32 @@ test('power save that cannot be read is unavailable, not silently "off"', async 
   assert.equal(c.availability.powerSave, 'unavailable')
 })
 
+test('full-pack estimate only holds in the 30-80% discharging band', async () => {
+  const run = async (patch) => {
+    const exec = async (cmd) => {
+      if (cmd === 'termux-battery-status') {
+        return JSON.stringify({
+          percentage: 66,
+          voltage: 3977,
+          current: 482000,
+          charge_counter: 4704000,
+          plugged: 'UNPLUGGED',
+          status: 'DISCHARGING',
+          ...patch
+        })
+      }
+      return null
+    }
+    const source = new AndroidSignalSource({ fs: fakeFs({}), exec, env: {} })
+    return (await source.read()).telemetry
+  }
+  assert.equal((await run({})).fullMah, 7127.3, '66% discharging: usable')
+  assert.equal((await run({ percentage: 90, charge_counter: 6400000 })).fullMah, null, 'above 80%')
+  assert.equal((await run({ percentage: 20, charge_counter: 1420000 })).fullMah, null, 'below 30%')
+  assert.equal((await run({ plugged: 'PLUGGED_USB', status: 'CHARGING' })).fullMah, null, 'never while charging')
+  assert.equal((await run({ status: 'DISCHARGING', plugged: 'PLUGGED_AC' })).fullMah, null, 'conflicting fields are not "stable discharge"')
+})
+
 test('dumpsys screen probing degrades to null instead of guessing "on"', async () => {
   const denied = new AndroidSignalSource({ exec: async () => null, env: {} })
   assert.equal(await denied.readScreenOn(), null)

@@ -1,22 +1,35 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # 一次性真机采集：把人工操作压到「一条命令 + 一次粘贴」。
 #
-#   bash scripts/ondevice-once.sh          # 默认端口读 config.json
-#   MCBOT_PORT=18770 bash scripts/ondevice-once.sh
+#   bash scripts/ondevice-once.sh --baseline   # 熄屏 30 min，不跑 bot（减数）
+#   bash scripts/ondevice-once.sh              # 登录一次，然后熄屏 30 min（被减数）
 #
-# 做的事：检桥 -> 打硬件档案 -> 起 bot（等设备码登录）-> 30 分钟功率采样
-#        -> logs/ondevice-<时间>/report.txt
-#
-# 探针参数是固定的（60s x 30 次，持 termux-wake-lock），这样后面的对照测量
-# 可以把这层探针开销抵消掉。改参数会让历史数据失去可比性。
+# 两种模式必须同条件：都熄屏、都不碰手机、同一个充电状态、别改间隔。
+# 探针参数固定 60s x 30 次 + wake-lock，且测量期间关掉 bot 内部的 10s 功率
+# 日志（MCBOT_POWER_TELEMETRY=0），保证两种模式都只有「1 次/分」这一个采样源。
+# 否则 bot-ON 会多出 6 次/分的探针开销，差值就不可解释了。
 
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT" || exit 1
 
+MODE="bot"
+case "${1:-}" in
+  --baseline) MODE="baseline" ;;
+  "") MODE="bot" ;;
+  -h|--help)
+    echo "usage: bash scripts/ondevice-once.sh [--baseline]"
+    exit 0
+    ;;
+  *)
+    echo "unknown argument: $1 (use --baseline or nothing)"
+    exit 2
+    ;;
+esac
+
 STAMP="$(date +%Y%m%d-%H%M%S)"
-RUN_DIR="$ROOT/logs/ondevice-$STAMP"
+RUN_DIR="$ROOT/logs/ondevice-$MODE-$STAMP"
 mkdir -p "$RUN_DIR"
 REPORT="$RUN_DIR/report.txt"
 BOT_LOG="$RUN_DIR/bot.log"
@@ -27,13 +40,14 @@ POWER_ERR="$RUN_DIR/power.err"
 INTERVAL_S=60
 DURATION_S=1800
 SAMPLES=$((DURATION_S / INTERVAL_S))
+SPAWN_WAIT_S=900
 
 PORT="${MCBOT_PORT:-$(node -e "try{const c=JSON.parse(require('fs').readFileSync('config.json','utf8'));process.stdout.write(String((c.ws&&c.ws.port)||8765))}catch{process.stdout.write('8765')}" 2>/dev/null)}"
 
 say () { printf '%s\n' "$*" | tee -a "$REPORT"; }
 
-say "ondevice-once $STAMP"
-say "params: interval=${INTERVAL_S}s samples=${SAMPLES} duration=${DURATION_S}s wake-lock=on port=${PORT}"
+say "ondevice-once mode=$MODE $STAMP"
+say "params: interval=${INTERVAL_S}s samples=${SAMPLES} duration=${DURATION_S}s wake-lock=on probe=termux-battery-status bot-telemetry=off"
 say ""
 
 # ---------------------------------------------------------------- 1. 检桥
@@ -88,48 +102,89 @@ say "== 2. hardware profile =="
   done
 } | tee -a "$REPORT"
 
-# ------------------------------------------------------------- 3. 起 bot
+# ---------------------------------------------------- 3. 起 bot（或确认没起）
 say ""
-say "== 3. bridge + login =="
-if curl -s --max-time 2 "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then
-  say "FAIL: 端口 $PORT 上已经有服务。先停掉：pkill -f src/index.js"
-  exit 1
-fi
-
-termux-wake-lock 2>/dev/null || say "WARN: termux-wake-lock failed (sleep may pause sampling)"
-nohup node src/index.js >>"$BOT_LOG" 2>&1 &
-BOT_PID=$!
-echo "$BOT_PID" >"$RUN_DIR/bot.pid"
-
-started=0
-i=0
-while [ "$i" -lt 60 ]; do
-  i=$((i + 1))
+if [ "$MODE" = "bot" ]; then
+  say "== 3. bridge + login =="
   if curl -s --max-time 2 "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then
-    started=1
-    break
+    say "FAIL: 端口 $PORT 上已经有服务。先停掉：pkill -f src/index.js"
+    exit 1
   fi
-  kill -0 "$BOT_PID" 2>/dev/null || break
-  sleep 1
-done
-if [ "$started" -ne 1 ]; then
-  say "FAIL: bot 没起来（pid $BOT_PID）。日志末尾："
-  tail -n 30 "$BOT_LOG" 2>/dev/null | tee -a "$REPORT"
-  exit 1
-fi
-say "bot started (pid $BOT_PID), bridge http://127.0.0.1:$PORT"
 
-code_line="$(grep -m1 -E "microsoft\.com/link|enter the code" "$BOT_LOG" 2>/dev/null)"
-if [ -n "$code_line" ]; then
-  say "device code: $code_line"
+  termux-wake-lock 2>/dev/null || say "WARN: termux-wake-lock failed (sleep may pause sampling)"
+  # 测量期只留脚本这一个采样源。
+  MCBOT_POWER_TELEMETRY=0 nohup node src/index.js >>"$BOT_LOG" 2>&1 &
+  BOT_PID=$!
+  echo "$BOT_PID" >"$RUN_DIR/bot.pid"
+
+  started=0
+  i=0
+  while [ "$i" -lt 60 ]; do
+    i=$((i + 1))
+    if curl -s --max-time 2 "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then
+      started=1
+      break
+    fi
+    kill -0 "$BOT_PID" 2>/dev/null || break
+    sleep 1
+  done
+  if [ "$started" -ne 1 ]; then
+    say "FAIL: bot 没起来（pid $BOT_PID）。日志末尾："
+    tail -n 30 "$BOT_LOG" 2>/dev/null | tee -a "$REPORT"
+    exit 1
+  fi
+  say "bot started (pid $BOT_PID), bridge http://127.0.0.1:$PORT"
+  say "bot 内部功率日志已关闭（MCBOT_POWER_TELEMETRY=0），采样只由本脚本做。"
+
+  code_line="$(grep -m1 -E "microsoft\.com/link|enter the code" "$BOT_LOG" 2>/dev/null)"
+  if [ -n "$code_line" ]; then
+    say "device code: $code_line"
+  else
+    say "设备码还没出现：另开一个 Termux 会话跑 tail -f $BOT_LOG"
+  fi
+
+  # 采样必须在 spawn 之后开始：登录 + 加载世界是一次性尖峰，混进 30 分钟
+  # 会把整段中位数抬高，而 baseline 没有这段尖峰。
+  say ""
+  say "等待 spawn（最多 ${SPAWN_WAIT_S}s）；设备码授权完成后会自动继续："
+  spawned=0
+  waited=0
+  while [ "$waited" -lt "$SPAWN_WAIT_S" ]; do
+    if curl -s --max-time 2 "http://127.0.0.1:$PORT/api/health" 2>/dev/null | grep -q '"status":"online"'; then
+      spawned=1
+      break
+    fi
+    kill -0 "$BOT_PID" 2>/dev/null || break
+    sleep 5
+    waited=$((waited + 5))
+    if [ $((waited % 60)) -eq 0 ]; then
+      say "  ...${waited}s: 仍在等待 spawn（auth/status 见 $BOT_LOG）"
+    fi
+  done
+  if [ "$spawned" -ne 1 ]; then
+    say "FAIL: ${SPAWN_WAIT_S}s 内没有 spawn，不开始采样（不采没有意义的数字）。"
+    say "看 auth 横幅或 $BOT_LOG；修好后重跑本脚本。"
+    exit 1
+  fi
+  say "spawn ok at +${waited}s。**现在熄屏、不要碰手机**，采样从此刻开始。"
 else
-  say "设备码还没出现：另开一个 Termux 会话跑 tail -f $BOT_LOG"
+  say "== 3. baseline mode: no bot =="
+  # baseline 必须是「手机本身」：bot 还在跑就等于没做对照。
+  if curl -s --max-time 2 "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then
+    say "FAIL: 端口 $PORT 上有服务在跑，baseline 失去意义。先 pkill -f src/index.js"
+    exit 1
+  fi
+  if command -v pgrep >/dev/null 2>&1 && pgrep -f "node src/index.js" >/dev/null 2>&1; then
+    say "FAIL: 还有 node src/index.js 在跑，baseline 失去意义。先 pkill -f src/index.js"
+    exit 1
+  fi
+  termux-wake-lock 2>/dev/null || say "WARN: termux-wake-lock failed (sleep may pause sampling)"
+  say "没有 bot 在跑。**现在熄屏、不要碰手机、不要充电**，与 bot-ON 那轮保持同一条件。"
 fi
-say "现在去 https://www.microsoft.com/link 完成授权；采样会在后台继续，不耽误登录。"
 
 # --------------------------------------------------- 4. 30 分钟功率采样
 say ""
-say "== 4. power sampling (${SAMPLES} x ${INTERVAL_S}s) =="
+say "== 4. power sampling (${SAMPLES} x ${INTERVAL_S}s, single sampler) =="
 i=0
 while [ "$i" -lt "$SAMPLES" ]; do
   i=$((i + 1))
@@ -146,8 +201,13 @@ done
 
 # --------------------------------------------------------------- 5. report
 say ""
-say "== 5. verdict =="
-POWER_JSONL="$POWER_JSONL" PORT="$PORT" BOT_LOG="$BOT_LOG" node <<'NODE' | tee -a "$REPORT"
+say "== 5. verdict ($MODE) =="
+BASELINE_JSONL=""
+if [ "$MODE" = "bot" ]; then
+  # 自动找最近一份 baseline 的原始采样，免得手算减法。不看旧报告文本，只重算。
+  BASELINE_JSONL="$(ls -1t "$ROOT"/logs/ondevice-baseline-*/power.jsonl 2>/dev/null | head -1)"
+fi
+POWER_JSONL="$POWER_JSONL" BASELINE_JSONL="$BASELINE_JSONL" MODE="$MODE" PORT="$PORT" BOT_LOG="$BOT_LOG" node <<'NODE' | tee -a "$REPORT"
 const fs = require('fs')
 const http = require('http')
 
@@ -158,65 +218,98 @@ function median (xs) {
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2
 }
 
-const lines = fs.existsSync(process.env.POWER_JSONL)
-  ? fs.readFileSync(process.env.POWER_JSONL, 'utf8').split('\n').filter(Boolean)
-  : []
-const samples = []
-for (const line of lines) {
-  try {
-    const rec = JSON.parse(line)
-    const d = rec.data || {}
-    const v = Number(d.voltage)
-    const i = Number(d.current)
-    const pct = Number(d.percentage)
-    const cc = Number(d.charge_counter)
-    if (!Number.isFinite(v) || !Number.isFinite(i)) continue
-    const watts = Math.abs((v / 1000) * (i / 1e6))
-    const fullMah = Number.isFinite(cc) && pct > 0 ? (cc / 1000) / (pct / 100) : null
-    const wh = fullMah !== null ? (fullMah / 1000) * (v / 1000) : null
-    samples.push({ ts: rec.ts, watts, pct, fullMah, wh })
-  } catch {}
+// Same guards as src/power/sources.js: full-pack extrapolation only with
+// UNPLUGGED + DISCHARGING in the flat 30-80% band.
+function parseSamples (file) {
+  if (!file || !fs.existsSync(file)) return []
+  const out = []
+  for (const line of fs.readFileSync(file, 'utf8').split('\n').filter(Boolean)) {
+    try {
+      const rec = JSON.parse(line)
+      const d = rec.data || {}
+      const v = Number(d.voltage)
+      const i = Number(d.current)
+      const pct = Number(d.percentage)
+      const cc = Number(d.charge_counter)
+      if (!Number.isFinite(v) || !Number.isFinite(i)) continue
+      const plugged = String(d.plugged || '').toUpperCase()
+      const status = String(d.status || '').toUpperCase()
+      const discharging = plugged.includes('UNPLUGGED') && status === 'DISCHARGING'
+      const watts = Math.abs((v / 1000) * (i / 1e6))
+      const fullMah = discharging && pct >= 30 && pct <= 80 && Number.isFinite(cc) && cc > 0
+        ? (cc / 1000) / (pct / 100)
+        : null
+      out.push({ watts, pct, fullMah, wh: fullMah ? (fullMah / 1000) * (v / 1000) : null })
+    } catch {}
+  }
+  return out
 }
 
-const watts = samples.map((s) => s.watts)
-const whs = samples.map((s) => s.wh).filter((x) => Number.isFinite(x))
-const wh = whs.length ? median(whs) : null
+const mine = parseSamples(process.env.POWER_JSONL)
+const watts = mine.map((s) => s.watts)
 const wMed = watts.length ? median(watts) : null
-console.log(`samples: ${samples.length}`)
+const wh = median(mine.map((s) => s.wh).filter(Number.isFinite))
+const fullMah = median(mine.map((s) => s.fullMah).filter(Number.isFinite))
+const estPctPerHour = wMed !== null && wh ? (wMed / wh) * 100 : null
+
+console.log(`samples: ${mine.length}${mine.length ? `  (pct ${Math.min(...mine.map((s) => s.pct))}-${Math.max(...mine.map((s) => s.pct))})` : ''}`)
 if (wMed !== null) {
-  console.log(`power median: ${wMed.toFixed(3)} W  (min ${Math.min(...watts).toFixed(3)} / max ${Math.max(...watts).toFixed(3)})`)
-  if (wh) console.log(`pack estimate: ${median(samples.map((s) => s.fullMah).filter(Number.isFinite)).toFixed(0)} mAh -> ${wh.toFixed(1)} Wh`)
-  console.log(`estimate: ${((wMed / (wh || 27.4)) * 100).toFixed(2)} %/h  (target < 0.5 %/h, needs calibration)`)
+  console.log(`${process.env.MODE === 'baseline' ? 'baseline' : 'bot-ON'} median: ${wMed.toFixed(3)} W  (min ${Math.min(...watts).toFixed(3)} / max ${Math.max(...watts).toFixed(3)})`)
+  if (fullMah) console.log(`pack estimate: ${fullMah.toFixed(0)} mAh -> ${wh.toFixed(1)} Wh  (only 30-80% discharging samples)`)
+  if (estPctPerHour) console.log(`total draw: ${estPctPerHour.toFixed(2)} %/h  (whole device, NOT the bot increment)`)
 } else {
-  console.log('power median: NO DATA - do not fill this in by hand')
+  console.log(`${process.env.MODE === 'baseline' ? 'baseline' : 'bot-ON'} median: NO DATA - do not fill this in by hand`)
 }
 
-const log = fs.existsSync(process.env.BOT_LOG) ? fs.readFileSync(process.env.BOT_LOG, 'utf8') : ''
-const spawn = /spawned|bot is online/i.test(log)
-const loginErr = (log.match(/login (rejected|failed)[^\n]*/i) || [])[0] || null
-console.log(`spawn: ${spawn ? 'YES' : 'NO'}${loginErr ? `  login error: ${loginErr}` : ''}`)
+if (process.env.MODE === 'bot') {
+  const base = parseSamples(process.env.BASELINE_JSONL)
+  if (base.length) {
+    const bWatts = base.map((s) => s.watts)
+    const bMed = median(bWatts)
+    const bWh = median(base.map((s) => s.wh).filter(Number.isFinite)) || wh
+    const deltaW = wMed !== null ? wMed - bMed : null
+    console.log(`baseline file: ${process.env.BASELINE_JSONL}`)
+    console.log(`baseline median: ${bMed.toFixed(3)} W (n=${base.length})`)
+    if (deltaW !== null) {
+      console.log(`increment: ${deltaW.toFixed(3)} W -> ${bWh ? ((deltaW / bWh) * 100).toFixed(2) : '?'} %/h  (target < 0.5 %/h)`)
+    }
+  } else {
+    console.log('increment: no baseline run found - run --baseline first, then this again')
+  }
 
-http.get(`http://127.0.0.1:${process.env.PORT}/api/health`, (res) => {
-  let body = ''
-  res.on('data', (c) => { body += c })
-  res.on('end', () => {
-    let h = {}
-    try { h = JSON.parse(body) } catch {}
-    console.log(`status: ${h.status || 'unknown'}  mode: ${h.mode || 'unknown'}`)
-    console.log('signals:')
-    for (const key of ['battery', 'charging', 'thermal', 'screen', 'powerSave']) {
-      const row = (h.signals || {})[key] || {}
-      console.log(`  ${key.padEnd(10)} ${row.status || 'missing'}${row.bridge ? `  bridge=${row.bridge}` : ''}${row.baseline ? `  baseline=${row.baseline}` : ''}${row.zone ? `  zone=${row.zone}` : ''}`)
-    }
-    if (h.power) {
-      console.log(`power: battery=${h.power.battery} charging=${h.power.charging} thermalDelta=${h.power.thermalDelta} thermalC=${h.power.thermalCelsius} baselineC=${h.power.thermalBaselineC}`)
-    }
-  })
-}).on('error', (e) => console.log(`health request failed: ${e.message}`))
+  const log = fs.existsSync(process.env.BOT_LOG) ? fs.readFileSync(process.env.BOT_LOG, 'utf8') : ''
+  const spawn = /spawned|bot is online/i.test(log)
+  const loginErr = (log.match(/login (rejected|failed)[^\n]*/i) || [])[0] || null
+  console.log(`spawn: ${spawn ? 'YES' : 'NO'}${loginErr ? `  login error: ${loginErr}` : ''}`)
+
+  http.get(`http://127.0.0.1:${process.env.PORT}/api/health`, (res) => {
+    let body = ''
+    res.on('data', (c) => { body += c })
+    res.on('end', () => {
+      let h = {}
+      try { h = JSON.parse(body) } catch {}
+      console.log(`status: ${h.status || 'unknown'}  mode: ${h.mode || 'unknown'}`)
+      console.log('signals:')
+      for (const key of ['battery', 'charging', 'thermal', 'screen', 'powerSave']) {
+        const row = (h.signals || {})[key] || {}
+        console.log(`  ${key.padEnd(10)} ${row.status || 'missing'}${row.bridge ? `  bridge=${row.bridge}` : ''}${row.baseline ? `  baseline=${row.baseline}` : ''}${row.zone ? `  zone=${row.zone}` : ''}`)
+      }
+      if (h.power) {
+        console.log(`power: battery=${h.power.battery} charging=${h.power.charging} thermalDelta=${h.power.thermalDelta} thermalC=${h.power.thermalCelsius} baselineC=${h.power.thermalBaselineC}`)
+      }
+    })
+  }).on('error', (e) => console.log(`health request failed: ${e.message}`))
+}
 NODE
 
 say ""
 say "report: $REPORT"
-say "bot 仍在运行（pid $(cat "$RUN_DIR/bot.pid")），wake-lock 仍持有。"
-say "停掉：pkill -f src/index.js && termux-wake-unlock"
-say "把上面这段（含 hardware profile）原样贴回，不要手改数字。"
+if [ "$MODE" = "bot" ]; then
+  say "bot 仍在运行（pid $(cat "$RUN_DIR/bot.pid")），wake-lock 仍持有。"
+  say "停掉：pkill -f src/index.js && termux-wake-unlock"
+  say "把 baseline 和 bot-ON 两份 report 一起贴回，不要手改数字。"
+else
+  say "wake-lock 仍持有（baseline 与 bot-ON 条件一致）。"
+  say "接着跑 bot-ON：bash scripts/ondevice-once.sh"
+  say "两份 report 一起贴回，不要手改数字。"
+fi

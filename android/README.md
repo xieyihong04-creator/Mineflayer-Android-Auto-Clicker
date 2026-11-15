@@ -16,6 +16,8 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 版本对齐（首炸常客）：AGP 8.7.2 ↔ Gradle 8.10.2 ↔ JDK 17 ↔ Kotlin 2.0.21 ↔ compileSdk 35。CI 见仓库根 `.github/workflows/android-build.yml`。
 
+不想跑 CI 也不想本地构建时，`dist/mcbot-android-debug-<version>.zip` 里有已经构建好的 APK 和 `BUILD.txt` 溯源（commit / CI run / sha256）。注意那是快照，代码变了要重新构建。
+
 没装 Android SDK 时用命令行工具（CI 里同样显式装一遍，避免 runner 镜像缺少 35 这一档）：
 
 ```bash

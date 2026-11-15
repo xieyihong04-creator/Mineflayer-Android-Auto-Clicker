@@ -1,0 +1,131 @@
+{
+  "server": {
+    "host": "play.example.com",
+    "port": 25565,
+    "version": false,
+    "username": "your-microsoft-account@example.com",
+    "autoConnect": true
+  },
+  "auth": {
+    "type": "microsoft",
+    "profilesFolder": "./.auth"
+  },
+  "reconnect": {
+    "baseMs": 1000,
+    "maxMs": 60000,
+    "enabled": true
+  },
+  "power": {
+    "debounceMs": 10000,
+    "forcedMode": null,
+    "battery": {
+      "l0Below": 20,
+      "l3Below": 10,
+      "l3ExitAbove": 20,
+      "l3SkipWhileCharging": true
+    },
+    "thermal": {
+      "l0AtOrAbove": 2
+    },
+    "screen": {
+      "requireClient": true,
+      "reportStaleMs": 600000
+    },
+    "idleMs": 30000,
+    "stateHz": {
+      "L2": 2,
+      "L1": 0.2,
+      "L0": 0.05
+    },
+    "chatLimit": 200,
+    "chatLimitL0": 50,
+    "logToFile": true,
+    "viewDistance": {
+      "default": "normal",
+      "l0": "tiny"
+    }
+  },
+  "eat": {
+    "enabled": true,
+    "threshold": 14,
+    "disconnectAtHealth": 8,
+    "blacklist": [
+      "rotten_flesh",
+      "spider_eye",
+      "poisonous_potato",
+      "pufferfish",
+      "raw_chicken",
+      "tropical_fish"
+    ],
+    "whitelist": [
+      "bread",
+      "apple",
+      "golden_apple",
+      "golden_carrot",
+      "carrot",
+      "baked_potato",
+      "cooked_beef",
+      "cooked_porkchop",
+      "cooked_mutton",
+      "cooked_chicken",
+      "cooked_rabbit",
+      "cooked_cod",
+      "cooked_salmon",
+      "melon_slice",
+      "sweet_berries",
+      "glow_berries",
+      "pumpkin_pie",
+      "mushroom_stew",
+      "beetroot_soup",
+      "dried_kelp",
+      "cookie"
+    ]
+  },
+  "inv": {
+    "enabled": true,
+    "minEmptySlots": 3,
+    "intervalMs": 300000,
+    "tossGapMs": 300,
+    "abortOnDamage": true,
+    "retainCategories": [
+      "tools",
+      "weapons",
+      "armor",
+      "food"
+    ],
+    "dropPoint": {
+      "set": false,
+      "type": "lava",
+      "x": 0,
+      "y": 64,
+      "z": 0,
+      "validate": true,
+      "maxStandDistance": 3
+    }
+  },
+  "respawn": {
+    "enabled": true,
+    "maxConsecutive": 3,
+    "windowMs": 600000,
+    "delayMs": 2000,
+    "returnToWaypoint": true,
+    "waypoint": "afk"
+  },
+  "nav": {
+    "timeoutMs": 30000,
+    "range": 2,
+    "canDig": false,
+    "allowParkour": false,
+    "allowFreeMotion": false
+  },
+  "afk": {
+    "enabled": false,
+    "intervalMs": 60000,
+    "action": "look"
+  },
+  "ws": {
+    "host": "127.0.0.1",
+    "port": 8765
+  },
+  "waypoints": {}
+}

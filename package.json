@@ -1,0 +1,22 @@
+{
+  "name": "mineflayer-android-console",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mineflayer Android AFK console (M1: Termux Node service + localhost WebSocket + web UI)",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node --test test/*.test.js",
+    "check": "node scripts/check-syntax.js"
+  },
+  "dependencies": {
+    "mineflayer": "^4.39.0",
+    "mineflayer-pathfinder": "^2.4.5",
+    "prismarine-auth": "^2.6.1",
+    "ws": "^8.18.0"
+  }
+}

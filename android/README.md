@@ -2,20 +2,21 @@
 
 WebView 外壳 + `specialUse` 前台服务 + 原生信号桥。**这里只负责保活和送信号，UI 与档位逻辑仍在 `web/` 和 `src/`。**
 
-> **状态：源码未编译。** 开发沙箱里没有 Android SDK（无 `ANDROID_HOME`、无 `sdkmanager`/`platform-tools`），因此没有任何一次 `assemble` 或真机安装。下面给出的构建命令是按标准 AGP 工程写的，第一次真正构建时如果报错，请按报错修，不要假定它已经能用。
+> **状态：能编出 debug APK，但从未装上真机。** `./gradlew assembleDebug` 已本地跑绿（`clean` 后重编也绿），并用 `aapt2 dump` 核对过清单里 `foregroundServiceType=specialUse(0x40000000)` 和 `PROPERTY_SPECIAL_USE_FGS_SUBTYPE` 确实存在。**编译通过不等于运行正确**：五条 M2 验收仍全部未验证。
 
 ## 构建
 
-需要 JDK 17+（本机有 21）、Android SDK Platform 35 + Build-Tools 35，以及一个可以联网的 Gradle（`gradle/wrapper/gradle-wrapper.properties` 指向 8.10.2，但 wrapper jar 没有入库）：
+需要 JDK 17+ 与 Android SDK Platform 35 + Build-Tools 35。**wrapper 已入库**（`gradlew` + `gradle-wrapper.jar`，Gradle 8.10.2），CI 与本地走同一条路径：
 
 ```bash
 cd android
-gradle wrapper --gradle-version 8.10.2   # 首次，生成 gradlew + wrapper jar
-./gradlew :app:assembleDebug
+./gradlew assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-没装 Android SDK 时可用命令行工具：
+版本对齐（首炸常客）：AGP 8.7.2 ↔ Gradle 8.10.2 ↔ JDK 17 ↔ Kotlin 2.0.21 ↔ compileSdk 35。CI 见仓库根 `.github/workflows/android-build.yml`。
+
+没装 Android SDK 时用命令行工具（CI 里同样显式装一遍，避免 runner 镜像缺少 35 这一档）：
 
 ```bash
 sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools"

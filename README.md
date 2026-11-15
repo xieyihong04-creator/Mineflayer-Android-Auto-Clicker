@@ -79,7 +79,7 @@ P1 也做了最小版本：挂机点记录/返回、事件通知（掉线/死亡
 - **F7 留在 Node，不迁移。** 档位状态机、去抖、迟滞都在 `src/power/`，外壳只送信号。
 - **"原生比 Node 省电"未经证明。** 没有任何 A/B 数据，M2 也不打算用这个当卖点。
 - **被动功耗日志保持默认开启**（`logs/power-<day>.jsonl`），不要求用户做 A/B；只有测量时才用 `MCBOT_POWER_TELEMETRY=0` 关掉，保证单采样源。
-- **`android/` 未编译出 APK。** 本沙箱没有 Android SDK（`ANDROID_HOME` 未设，无 `sdkmanager`/`platform-tools`），源码是照 API 契约写的，**没有一次真实构建**。M2 的五条验收因此全部处于"未验证"。
+- **`android/` 能编出 debug APK，但没有在设备上跑过。** 本轮在沙箱里装了 `cmdline-tools` + `platforms;android-35` + `build-tools;35.0.0`，`./gradlew assembleDebug` 已本地跑绿（`clean` 后重编同样绿），并用 `aapt2` 核对过 `foregroundServiceType=specialUse` 与 `PROPERTY_SPECIAL_USE_FGS_SUBTYPE` 真的进了清单。**编译通过 ≠ 运行正确**：M2 的五条验收仍全部处于"未验证"，等 APK 装上真机。
 
 ### 架构
 
@@ -105,13 +105,18 @@ WebView 外壳加载 `http://127.0.0.1:<port>`（默认 8765，可用 `--es port
 
 | 项 | 判定方式 | 状态 |
 |---|---|---|
-| APK 可安装 | `./gradlew :app:assembleDebug` + `adb install` | 未构建 |
+| APK 可构建 | `./gradlew :app:assembleDebug`（本地与 CI 同一 wrapper） | **已绿**（构建产物 2.0 MB，minSdk 26 / target 35） |
+| APK 可安装 | `adb install` + 首次启动 | 未验证 |
 | FGS 在 HyperOS 存活 ≥2h | 熄屏 2h 后 `curl -s 127.0.0.1:8765/api/health` 仍有响应 | 未验证 |
 | 亮屏信号来自原生广播 | 熄屏后 `signals.screen.status` 仍为 `live`、`screenSource` 为 native | 未验证 |
 | `thermal`/`powerSave` 从 unavailable → live | `/api/health` 的 `power.thermalNative`、`powerSaveNative` 非 null | 未验证 |
 | WS 自愈 | 杀进程/断网后页面自动回到 `online` | 未验证 |
 
-M2 **不以功耗为验收项**；162→169 个测试通过只证明 Node 侧契约没坏，**不是省电证据**。
+M2 **不以功耗为验收项**；169 个测试通过只证明 Node 侧契约没坏，**不是省电证据**。
+
+### CI
+
+`.github/workflows/android-build.yml`：push 到本分支 / PR 时用 JDK 17 + 仓库内 gradlew 构建 `assembleDebug`，显式安装 `platforms;android-35`，产物上传为 `mcbot-android-debug`（14 天）。lint 只报告不阻塞。APK 不入库（`.gitignore` 已排除 `*.apk` 与 `android/**/build/`）。
 
 
 ## 功耗分级实现细节

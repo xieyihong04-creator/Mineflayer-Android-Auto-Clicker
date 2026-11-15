@@ -41,14 +41,14 @@ class NativeSignals(private val context: Context, private val listener: Listener
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_SCREEN_OFF)
-            addAction(Intent.ACTION_POWER_SAVE_MODE_CHANGED)
+            addAction(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED)
         }
         val r = object : android.content.BroadcastReceiver() {
             override fun onReceive(ctx: Context?, intent: Intent?) {
                 when (intent?.action) {
                     Intent.ACTION_SCREEN_ON -> listener.onScreenState(true)
                     Intent.ACTION_SCREEN_OFF -> listener.onScreenState(false)
-                    Intent.ACTION_POWER_SAVE_MODE_CHANGED -> listener.onPowerSave(powerManager.isPowerSaveMode)
+                    PowerManager.ACTION_POWER_SAVE_MODE_CHANGED -> listener.onPowerSave(powerManager.isPowerSaveMode)
                 }
             }
         }

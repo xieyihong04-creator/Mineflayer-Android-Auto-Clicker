@@ -24,24 +24,31 @@
 
 ## 二、探针怎么用
 
+装上打开就行，不需要 adb：App 解压 node 包 → 启动 libnode → **自己加载 `http://127.0.0.1:3999/`** 那个页面。页面本身就是操作界面：
+
+- **连接目标**：服务器地址、端口、玩家名、`使用微软登录` 勾选框，点“连接”。地址会被记住，改目标时上一次还在进行的连接会被取消（45 s 超时的那次不会挡住新的一次）。
+- **判定卡**：`未测试` / `通过 · 已连接并 spawn`（带版本与坐标）/ `未通过`（原样错误 + 一句建议，例如 ECONNREFUSED 提示“别填 127.0.0.1，那是手机自己”）。
+- **步骤**：逐条 ✓/✗，带各自耗时；`原始 JSON` 折叠在下面。
+- **运行环境**：node / 平台 / v8 / uv。
+- 勾了微软登录会多出一块设备码卡片（链接 + 代码）。
+
+必须记住：**`127.0.0.1` 是手机自己**。要连 PC 上的服务端就填局域网 IP（`ipconfig` / `ip addr`），手机和 PC 在同一 Wi-Fi。
+
+也可以先用 adb 预填（页面里还能改）：
+
 ```bash
 adb install -r probe-debug.apk
-# 离线连（服务器 online-mode=false 才成立）
 adb shell am start -n dev.mcbot.console.probe/.MainActivity \
   --es host 192.168.1.10 --ei port 25565 --es auth 0 --es user Probe
-# 微软设备码登录（走的是和 M1/M2 完全相同的 onMsaCode 路径）
-adb shell am start -n dev.mcbot.console.probe/.MainActivity \
-  --es host 你的服务器 --ei port 25565 --es auth 1
+# 正版服：--es auth 1，或页面里勾“使用微软登录”
 ```
 
-结果只有一个出口：**`http://127.0.0.1:3999/`**（手机浏览器直接打开，或 `adb forward tcp:3999 tcp:3999` 后在本机看）。因为 nodejs-mobile 默认不把 stdout 接到 logcat，探针自己起 HTTP 服务报状态，同时把同一份 JSON 写到 `files/probe-result.json`。
+结果同时落在 `files/probe-result.json`，`/result` 返回同一份 JSON（`adb forward tcp:3999 tcp:3999` 后可本机取）。判定只有一条：
 
-页面里 `/run` 重试连接，`/run?auth=1` 重试并走设备码。判定看 `steps[]` 与 `connect.ok`：
-
-- `steps` 里 `require mineflayer` 失败 → nodejs-mobile 装不下 mineflayer（门直接关上）
 - `connect.ok=true` 且 `detail="spawned"` → **门过了**，可以开始第 3 步
-- `kicked: "invalid session"` → 服务器是正版模式，需要 `auth=1` 重跑
-- `spawned` 之外的一切都不算过
+- `kicked: "invalid session"` → 服务器是正版模式，勾微软登录重跑
+- `ECONNREFUSED` → 地址通、端口没人监听（多半填了 `127.0.0.1`）
+- `timeout` → 路由/防火墙；`spawned` 之外的一切都不算过
 
 ## 三、门的状态
 

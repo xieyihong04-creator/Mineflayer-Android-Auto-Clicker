@@ -19,6 +19,10 @@ const { modeMessage } = require('./bridge/protocol')
 const ROOT = path.join(__dirname, '..')
 const CONFIG_PATH = process.env.MCBOT_CONFIG || path.join(ROOT, 'config.json')
 const POWER_POLL_MS = Number(process.env.MCBOT_POWER_POLL_MS || 10000)
+// Power telemetry to jsonl normally rides on the 10s poll. For on-device
+// measurement runs it has to be off: the script's own 60s probe is then the
+// only sampler, so the bot-ON and baseline runs pay the same probe cost.
+const POWER_TELEMETRY = process.env.MCBOT_POWER_TELEMETRY !== '0'
 
 async function main () {
   const configStore = new ConfigStore(CONFIG_PATH)
@@ -66,18 +70,22 @@ async function main () {
       manager.updatePower(signals)
       // Numbers, not UI: W, cycles and the full-pack estimate land in
       // logs/power-<day>.jsonl even at L0, where the event log is switched off.
-      logger.sample({
-        t: 'power',
-        mode: tier.mode,
-        battery: signals.battery,
-        charging: signals.charging,
-        powerSave: signals.powerSave,
-        thermalC: signals.thermalCelsius,
-        thermalBaselineC: signals.thermalBaselineC,
-        thermalDelta: signals.thermalDelta,
-        thermalZone: signals.thermalZone,
-        ...(signals.telemetry || {})
-      })
+      // Disabled with MCBOT_POWER_TELEMETRY=0 so a measurement run has exactly
+      // one sampler (the on-device probe), never two at different intervals.
+      if (POWER_TELEMETRY) {
+        logger.sample({
+          t: 'power',
+          mode: tier.mode,
+          battery: signals.battery,
+          charging: signals.charging,
+          powerSave: signals.powerSave,
+          thermalC: signals.thermalCelsius,
+          thermalBaselineC: signals.thermalBaselineC,
+          thermalDelta: signals.thermalDelta,
+          thermalZone: signals.thermalZone,
+          ...(signals.telemetry || {})
+        })
+      }
       if (tier.mode !== lastMode) lastMode = tier.mode
       server.broadcast(modeMessage(tier.snapshot))
     } catch (err) {

@@ -116,7 +116,9 @@ M2 **不以功耗为验收项**；169 个测试通过只证明 Node 侧契约没
 
 ### CI
 
-`.github/workflows/android-build.yml`：push 到本分支 / PR 时用 JDK 17 + 仓库内 gradlew 构建 `assembleDebug`，显式安装 `platforms;android-35`，产物上传为 `mcbot-android-debug`（14 天）。lint 只报告不阻塞。APK 不入库（`.gitignore` 已排除 `*.apk` 与 `android/**/build/`）。
+`.github/workflows/android-build.yml`：push 到本分支 / PR 时用 JDK 17 + 仓库内 gradlew 构建 `assembleDebug`，显式安装 `platforms;android-35`，产物上传为 `mcbot-android-debug`（14 天）。lint 只报告不阻塞。
+
+APK 本身不入库（`.gitignore` 排除 `*.apk` 与 `android/**/build/`）；`dist/` 里放的是**手动打好的 zip 快照**，内含 `app-debug.apk` 与 `BUILD.txt`（commit、CI run、工具链、APK 的 sha256），方便不入 GitHub 的场合直接取用。它是二进制快照，不是每次构建自动更新，用前先看 `BUILD.txt` 对不对得上当前代码。
 
 
 ## 功耗分级实现细节

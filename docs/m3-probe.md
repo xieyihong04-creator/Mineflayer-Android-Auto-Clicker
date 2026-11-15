@@ -46,6 +46,18 @@
 
 必须记住：**`127.0.0.1` 是手机自己**。要连 PC 上的服务端就填局域网 IP（`ipconfig` / `ip addr`），手机和 PC 在同一 Wi-Fi。
 
+### 域名与 SRV
+
+官方客户端对域名会先查 `_minecraft._tcp.<域名>` 的 SRV 记录，服务器真正的入口往往在记录里（例如 `mcfallout.net` → `jp.mcfallout.net:25565`，而 `mcfallout.net` 的 A 记录是 Cloudflare 的网页地址）。minecraft-protocol 也会做这个查询，但它用的是 Node 的 `dns.resolveSrv`（c-ares），在 Android 上不保证可用。上一版在真机上最终拨的是 A 记录地址：要么这条 SRV 不存在（域名拼错也会这样），要么设备上的 `resolveSrv` 没成功——两种情况从界面上都看不出来，只能干等 40 秒。现在把解析过程变成可见步骤，并且不依赖 c-ares 一定能用。
+
+所以探针自己先解析，再把结果交给 mineflayer（传 IP，避开它内部的 c-ares 查询）：
+
+- 端口不是 25565 时按原样直连，不查 SRV（和官方客户端一致）。
+- 端口 25565 且地址是域名时：系统 `dns.resolveSrv` → Cloudflare DoH → Google DoH，依次尝试。
+- 拿到 SRV 后，再用 `dns.lookup` 解析目标名（优先 IPv4），页面上会多出两行步骤：`srv _minecraft._tcp.<域名>` 与 `a <目标名>`。
+- 连接目标卡里显示「实际连接：<IP:端口>（SRV → <目标>）」，能直接看出拨到了哪。
+- 域名拼错会显示 `域名不存在 (NXDOMAIN)`，不用再等 40 秒去猜。
+
 也可以先用 adb 预填（页面里还能改）：
 
 ```bash

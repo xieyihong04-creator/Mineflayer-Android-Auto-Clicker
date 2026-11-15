@@ -17,8 +17,11 @@
  */
 
 const http = require('http')
+const https = require('https')
 const fs = require('fs')
 const os = require('os')
+const net = require('net')
+const dns = require('dns')
 const path = require('path')
 
 const STATUS_PORT = 3999
@@ -191,6 +194,123 @@ let busy = false
 // a 45 s connect is still pending, so a new /run must be able to drop the old one.
 let abortCurrent = null
 
+// ------------------------------------------------------------- name resolution
+//
+// A domain in the address box is often NOT the machine to dial: Java clients
+// look for _minecraft._tcp.<domain> first (vanilla, and minecraft-protocol does
+// the same). c-ares -- what Node's dns.resolve* uses -- cannot read Android's
+// resolver configuration, so on device the lookup can fail while the domain
+// still works in the real client. We therefore try the system resolver, then
+// DNS-over-HTTPS, and only fall back to the A record.
+
+function withTimeout (promise, ms, label) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(label + ' timeout ' + ms + 'ms')), ms)
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v) },
+      (e) => { clearTimeout(timer); reject(e) }
+    )
+  })
+}
+
+function dohQuery (base, name, type) {
+  return new Promise((resolve, reject) => {
+    const url = base + '?name=' + encodeURIComponent(name) + '&type=' + type
+    const req = https.get(url, { headers: { accept: 'application/dns-json' } }, (res) => {
+      let body = ''
+      res.setEncoding('utf8')
+      res.on('data', (chunk) => { body += chunk })
+      res.on('end', () => {
+        try { resolve(JSON.parse(body)) } catch (e) { reject(new Error('bad DoH response')) }
+      })
+    })
+    req.setTimeout(4000, () => req.destroy(new Error('DoH timeout')))
+    req.on('error', reject)
+  })
+}
+
+function parseDohSrv (json) {
+  if (!json || json.Status !== 0) {
+    const err = new Error('dns status ' + (json && json.Status))
+    err.code = json && json.Status === 3 ? 'NXDOMAIN' : 'ESERVFAIL'
+    throw err
+  }
+  return (json.Answer || [])
+    .filter((a) => a.type === 33)
+    .map((a) => {
+      const p = String(a.data).trim().split(/\s+/)
+      return { priority: +p[0], weight: +p[1], port: +p[2], name: String(p[3]).replace(/\.$/, '') }
+    })
+}
+
+function pickSrv (records) {
+  return records.slice().sort((a, b) => (a.priority - b.priority) || (b.weight - a.weight))[0]
+}
+
+async function srvLookup (host) {
+  const name = '_minecraft._tcp.' + host
+  const attempts = [
+    ['system', () => withTimeout(dns.promises.resolveSrv(name), 2500, 'system dns')],
+    ['cloudflare', async () => parseDohSrv(await withTimeout(dohQuery('https://cloudflare-dns.com/dns-query', name, 'SRV'), 4500, 'DoH'))],
+    ['google', async () => parseDohSrv(await withTimeout(dohQuery('https://dns.google/resolve', name, 'SRV'), 4500, 'DoH'))]
+  ]
+  let last = null
+  for (const [via, fn] of attempts) {
+    try {
+      const recs = await fn()
+      if (recs && recs.length) return { rec: pickSrv(recs), via }
+      last = new Error('no SRV record')
+      last.code = 'ENODATA'
+    } catch (e) {
+      last = e
+    }
+  }
+  throw last || new Error('no SRV record')
+}
+
+function lookupA (name, cb) {
+  const started = Date.now()
+  // Prefer IPv4: Android phones often have a routable v6 only on some networks,
+  // and dns.lookup() returns ::1 for "localhost" first.
+  const attempt = (family) => withTimeout(dns.promises.lookup(name, family ? { family } : {}), 3000, 'A lookup')
+  attempt(4).catch(() => attempt(0)).then(
+    (res) => {
+      step('a ' + name, true, res.address, Date.now() - started)
+      cb(res.address)
+    },
+    (e) => {
+      step('a ' + name, false, e.message, Date.now() - started)
+      cb(null)
+    }
+  )
+}
+
+// Calls back with the address the socket should really dial.
+function resolveServer (host, port, done) {
+  const started = Date.now()
+  const direct = (h, p, note) => done(h, p, note)
+  if (net.isIP(host) !== 0) return direct(host, port, null)
+
+  const aRecord = (name, p, note) => lookupA(name, (ip) => direct(ip || name, p, note))
+
+  if (port !== 25565) {
+    // Vanilla only consults SRV when no port was given (25565 is the default).
+    return aRecord(host, port, null)
+  }
+  srvLookup(host).then(
+    ({ rec, via }) => {
+      const note = rec.name + ':' + rec.port
+      step('srv _minecraft._tcp.' + host, true, note + ' · ' + via, Date.now() - started)
+      aRecord(rec.name, rec.port, note)
+    },
+    (e) => {
+      const why = e.code === 'NXDOMAIN' ? '域名不存在 (NXDOMAIN)' : (e.code === 'ENODATA' ? '没有 SRV 记录' : e.message)
+      step('srv _minecraft._tcp.' + host, false, why, Date.now() - started)
+      aRecord(host, port, null)
+    }
+  )
+}
+
 function connectOnce () {
   if (!mineflayer) {
     status.connect = { ok: false, detail: 'mineflayer did not load' }
@@ -212,13 +332,35 @@ function connectOnce () {
   if (busy) return
   busy = true
   status.target = { host: HOST, port: PORT, auth: wantAuth ? 'microsoft' : 'offline', user: USERNAME }
+  status.resolved = null
+  status.resolveNote = null
+  let cancelled = false
+  abortCurrent = () => {
+    cancelled = true
+    busy = false
+    abortCurrent = null
+  }
+  resolveServer(HOST, PORT, (host, port, note) => {
+    if (cancelled) return
+    launch(host, port, note)
+  })
+}
+
+function launch (host, port, note) {
+  // The effective socket target. When it differs from what the user typed, the
+  // step list shows both, so "why is it dialling this IP" has an answer.
+  status.resolved = host + ':' + port
+  if (note) status.resolveNote = note
   const started = Date.now()
   const opts = {
-    host: HOST,
-    port: PORT,
+    host,
+    port,
     username: USERNAME,
     auth: wantAuth ? 'microsoft' : 'offline'
   }
+  const label = (host + ':' + port) === (HOST + ':' + PORT)
+    ? HOST + ':' + PORT
+    : host + ':' + port + ' (来自 ' + HOST + ':' + PORT + ')'
   let onAuthWait = null
   if (wantAuth) {
     status.authState = 'pending'
@@ -242,6 +384,7 @@ function connectOnce () {
     bot = mineflayer.createBot(opts)
   } catch (e) {
     busy = false
+    abortCurrent = null
     status.connect = { ok: false, ms: Date.now() - started, detail: 'createBot threw: ' + e.message }
     persist()
     return
@@ -273,7 +416,7 @@ function connectOnce () {
       }
     }
     // Duration of this attempt, not time since boot (the page shows both).
-    step('connect ' + HOST + ':' + PORT, ok, detail, Date.now() - started)
+    step('connect ' + label, ok, detail, Date.now() - started)
     try { bot.quit() } catch (e) {}
     bot = null
     abortCurrent = null
@@ -367,6 +510,7 @@ ul.steps li:first-child{border-top:0}
 #authbox button.ghost{display:none;background:#1d2530;color:var(--dim);height:44px;font-size:14px;margin-top:10px}
 small#authhint{display:none;color:var(--warn);font-size:12px;margin:-4px 0 12px}
 .subhint{display:block;color:var(--dim);font-size:12px;margin:-4px 0 12px;line-height:1.45}
+.subhint.resolved{display:none;color:var(--accent);margin-top:-6px}
 #authbox .code{font:600 22px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:2px;color:var(--warn);margin:6px 0}
 #authbox a{color:var(--warn)}
 details{border-top:1px solid var(--line);margin-top:12px;padding-top:10px}
@@ -402,6 +546,7 @@ const PAGE = `<!doctype html>
       </label>
     </div>
     <small id="hosthint" class="subhint"></small>
+    <small id="effective" class="subhint resolved"></small>
     <label>玩家名
       <input id="user" name="user" type="text" autocapitalize="off" autocorrect="off" spellcheck="false">
     </label>
@@ -460,6 +605,7 @@ const PAGE = `<!doctype html>
     var detail = c.detail || ''
     var tip = ''
     if (detail.indexOf('ECONNREFUSED') >= 0) tip = '地址通了但端口没人监听：确认服务端已启动、端口正确，别填 127.0.0.1（那是手机自己）。'
+    else if (/ECONNABORTED|ETIMEDOUT|EHOSTUNREACH/.test(detail)) tip = 'TCP 没人回应：这个地址多半不是 Java 版入口（域名常靠 SRV 记录指路）。核对拼写，或直接问服务器要 IP:端口。'
     else if (detail.indexOf('timeout') >= 0) tip = '超时：检查手机与服务端是否同一网络，或服务端防火墙。'
     else if (detail.indexOf('kicked') >= 0) tip = '被踢出：正版服请勾选“微软登录”再试。'
     else if (detail.indexOf('ENOTFOUND') >= 0 || detail.indexOf('EAI_AGAIN') >= 0) tip = '域名解析失败：改用 IP 试试。'
@@ -539,13 +685,24 @@ const PAGE = `<!doctype html>
   function hostHint (d) {
     var el = $('hosthint')
     var ips = (d.localIps || []).join(', ')
-    el.textContent = '服务器地址要填运行 Minecraft 服务端的电脑的局域网 IP（如 192.168.1.23），' +
+    el.textContent = '填服务器的地址：局域网填电脑的 IP（如 192.168.1.23），公服用服务器给的域名或 IP。' +
       '127.0.0.1 是手机自己。' + (ips ? '手机当前地址：' + ips : '')
+  }
+
+  function effective (d) {
+    var el = $('effective')
+    var typed = d.target ? d.target.host + ':' + d.target.port : ''
+    if (d.resolved && typed && d.resolved !== typed) {
+      el.style.display = 'block'
+      el.textContent = '实际连接：' + d.resolved + (d.resolveNote ? '（SRV → ' + d.resolveNote + '）' : '')
+    } else {
+      el.style.display = 'none'
+    }
   }
 
   var seen = ''
   function render (d) {
-    verdict(d); steps(d); chips(d); auth(d); hostHint(d)
+    verdict(d); steps(d); chips(d); auth(d); hostHint(d); effective(d)
     var sig = JSON.stringify([d.steps.length, d.connect, d.auth, d.updatedAt])
     if (sig !== seen) { seen = sig; $('raw').textContent = JSON.stringify(d, null, 2) }
   }

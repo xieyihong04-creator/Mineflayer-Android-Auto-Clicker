@@ -14,10 +14,16 @@
 
 ## 2. 信号自检 + `goto` 真实可达 / 不可达各一次
 
-- **启动自检**：打开网页，看顶部是否出现「信号自检异常」横幅；逐项对照 `hello.signals`：
-  - `cat /sys/class/power_supply/battery/capacity` 可读 → `hello.signals.battery.status=live`
-  - 不可读时执行 `termux-battery-status`（未装 Termux:API 应先 `pkg install termux-api` 并装 App）→ 状态应为 `live(termux-api)`；两者都不可用时必须是 `unavailable`，**不能显示 100%**
-  - 温度：`hello.signals.thermal.status` 为 `live` 或 `unavailable`；`unavailable` 时 UI 明示且 L0 温度降档不触发
+- **启动自检**：打开网页，看顶部是否出现「信号自检异常」横幅；逐项对照自检表。不方便截图时直接取原始值：
+  ```bash
+  curl -s localhost:8765/api/health | grep -o '"signals":{[^}]*}[^}]*}[^}]*}[^}]*}[^}]*}'
+  # 或直接看整段 JSON
+  curl -s localhost:8765/api/health
+  ```
+  - 电量：`signals.battery.status` 为 `live`（sysfs）或 `live(termux-api)`。`cat /sys/class/power_supply/battery/capacity` 读不到时先确认节点名（`battery`/`BATTERY`/`bms`/`BAT0`…，程序会按 `type == Battery` 扫）；仍不行再 `termux-battery-status`（需先 `pkg install termux-api` + 装 Termux:API App）。两者都失败必须是 `unavailable`，**不能显示 100%**。
+  - 充电：`signals.charging.status` 单独一行。`capacity` 和 `status` 是两个文件，可能一个读得到一个读不到；读不到时 UI 显示「未知」，并按**未充电**处理（低电量照样 L3 断开）。
+  - 温度：`signals.thermal.status` 为 `live` 或 `unavailable`；`unavailable` 时 UI 明示且 L0 温度降档不触发。
+  - **把 `battery` / `charging` / `thermal` 三行的原样值记下来**（机型 + ROM + 这三行），这决定 F7 留在 Node 还是要挪到 Android 原生。
 - **电量不可用时的档位**：临时屏蔽两种读数 → 档位应停在 **L1**（不是 L2、也不是 L0），UI 有告警。
 - **可达**：站在出生点，`goto` 到 30 格外一个已知坐标。
 - **不可达**：`goto` 到一个被墙围死或 y=-60 的点。

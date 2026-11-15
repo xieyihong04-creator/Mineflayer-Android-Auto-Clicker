@@ -209,3 +209,11 @@ test('unknown battery is L1, never L2 (no fake 100%)', () => {
   assert.equal(tier.update(unknown), 'L1')
   assert.equal(tier.update({ ...awake, battery: null, screenOn: true }), 'L1', 'still L1 with the screen on')
 })
+
+test('unknown charging is not "charging": 9% still goes L3 instead of skipping it', () => {
+  const c = clock()
+  const tier = new PowerTierController({ config: makeConfig(), now: c.now })
+  const unknown = { ...awake, battery: 9, charging: null }
+  // Upgrade into L3 is immediate; treating null as truthy would keep the radio on.
+  assert.equal(tier.update(unknown), 'L3')
+})

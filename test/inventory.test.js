@@ -5,7 +5,7 @@ const assert = require('node:assert/strict')
 const { InventoryManager } = require('../src/bot/inventory')
 const { FakeBot, FakePosition, makeConfig, fakeLogger, makeWorldBot } = require('./helpers')
 
-function makeInv ({ configPatch = {}, bot = new FakeBot(), validateDropPoint = undefined } = {}) {
+function makeInv ({ configPatch = {}, bot = new FakeBot(), validateDropPoint = undefined, now = undefined } = {}) {
   const gotos = []
   const events = []
   const gaps = []
@@ -39,6 +39,7 @@ function makeInv ({ configPatch = {}, bot = new FakeBot(), validateDropPoint = u
     emit: (msg) => events.push(msg),
     sleepFn: async (ms) => { gaps.push(ms) },
     notify: () => {},
+    ...(now ? { now } : {}),
     ...(validateDropPoint ? { validateDropPoint } : {})
   })
   return { inv, bot, gotos, gaps, events, nav }
@@ -224,4 +225,76 @@ test('F6: a container that fills mid-loop stops the deposit run', async () => {
   assert.match(result.reason, /容器已满/)
   assert.equal(deposits.length, 2)
   assert.equal(result.tossed, 2)
+})
+
+test('F6: a damage abort still closes the container window', async () => {
+  const bot = fillBot(new FakeBot({ pos: new FakePosition(0, 70, 0) }))
+  let closeCalls = 0
+  bot.blockAt = () => ({ name: 'chest', position: { x: 100, y: 64, z: -200 } })
+  bot.openContainer = async () => ({
+    selectedItem: null,
+    deposit: async () => { bot.health = 12 },
+    emptySlotCount: () => 5,
+    close: () => { closeCalls += 1 }
+  })
+  const notes = []
+  const { inv, gotos } = makeInv({
+    bot,
+    validateDropPoint: () => ({ ok: true, checked: false }),
+    configPatch: { inv: { dropPoint: { set: true, type: 'container', x: 100, y: 64, z: -200 } } }
+  })
+  inv.notify = (level, msg) => notes.push(msg)
+  const result = await inv.maybeCleanup({ force: true, reason: 'manual' })
+  assert.equal(result.ok, false)
+  assert.equal(closeCalls, 1, 'window is closed exactly once on the abort path')
+  assert.ok(notes.some((m) => /受到伤害/.test(m)))
+  assert.ok(notes.some((m) => /已丢 1 组/.test(m)), 'the abort message says how far it got')
+  assert.deepEqual(pick(gotos.at(-1)), { x: 0, y: 70, z: 0 }, 'closes, then walks home')
+})
+
+test('F6: closing with a stack on the cursor is reported, not silently lost', async () => {
+  const bot = fillBot(new FakeBot({ pos: new FakePosition(0, 70, 0) }))
+  bot.blockAt = () => ({ name: 'chest', position: { x: 100, y: 64, z: -200 } })
+  bot.openContainer = async () => ({
+    selectedItem: { name: 'dirt', count: 32 },
+    deposit: async () => {},
+    emptySlotCount: () => 0,
+    close: () => {}
+  })
+  const notes = []
+  const { inv } = makeInv({
+    bot,
+    validateDropPoint: () => ({ ok: true, checked: false }),
+    configPatch: { inv: { dropPoint: { set: true, type: 'container', x: 100, y: 64, z: -200 } } }
+  })
+  inv.notify = (level, msg) => notes.push(msg)
+  const result = await inv.maybeCleanup({ force: true, reason: 'manual' })
+  assert.equal(result.ok, false)
+  assert.ok(notes.some((m) => /容器已满/.test(m)))
+  assert.ok(notes.some((m) => /手上还有 32 个 dirt/.test(m)))
+})
+
+test('F6: the same abort is not re-toasted on every 5-minute retry', async () => {
+  const bot = fillBot(new FakeBot({ pos: new FakePosition(0, 70, 0) }))
+  bot.blockAt = () => ({ name: 'hopper', position: { x: 100, y: 64, z: -200 } })
+  bot.openContainer = async () => ({
+    deposit: async () => {},
+    emptySlotCount: () => 0,
+    close: () => {}
+  })
+  let clock = 1000
+  const notes = []
+  const { inv } = makeInv({
+    bot,
+    now: () => clock,
+    validateDropPoint: () => ({ ok: true, checked: false }),
+    configPatch: { inv: { dropPoint: { set: true, type: 'container', x: 100, y: 64, z: -200 } } }
+  })
+  inv.notify = (level, msg) => notes.push(msg)
+  await inv.maybeCleanup({ reason: 'timer' })
+  await inv.maybeCleanup({ reason: 'timer' })
+  assert.equal(notes.filter((m) => /容器已满/.test(m)).length, 1, 'deduped within 10 minutes')
+  clock += 11 * 60 * 1000
+  await inv.maybeCleanup({ reason: 'timer' })
+  assert.equal(notes.filter((m) => /容器已满/.test(m)).length, 2, 're-reported after the window')
 })

@@ -49,7 +49,7 @@ src/bridge/protocol.js  协议 v1 校验与上行构造
 src/bridge/server.js    WS + 静态页面 + 指令分发
 web/                    移动端网页控制台（无构建、无外部依赖）
 docs/                   真机验收清单
-test/                   148 个 node:test 用例
+test/                   155 个 node:test 用例
 ```
 
 ## P0 验收对照
@@ -73,9 +73,11 @@ P1 也做了最小版本：挂机点记录/返回、事件通知（掉线/死亡
 - **信号来源**：`/sys/class/power_supply/*/capacity`（读不到再试 `termux-battery-status`）、`thermal_zone*/temp`、`settings get global low_power`。桌面或测试可用 `MCBOT_MOCK_POWER='{"battery":18,"screenOn":false}'` 模拟。
 - **每个外部信号都有第三态，且不会静默等于正常值**：
   - 电量：sysfs 与 `termux-battery-status` 都失败 → `null`，档位按 **L1** 处理（不是“100%”也不会自动 L2）；UI 顶部弹告警。
+  - 电量节点名各 ROM 不同（`battery`/`BATTERY`/`bms`/`BAT0`…）：先扫 `/sys/class/power_supply/*/type == Battery`，再退回固定候选目录。
+  - **充电是独立一行**：`capacity` 和 `status` 是两个文件，可以一个读得到一个读不到；充电读不到时为 `null`（UI 显示「未知」），并按“未充电”处理——低电量仍会 L3 断开，不会误跳过。
   - `termux-battery-status` 依赖 **Termux:API App + `pkg install termux-api`**，是硬依赖；未安装时降级为 `unavailable` 而不是假装有读数。
   - 温度：所有 `thermal_zone*` 都不可读（zone 编号各 ROM 不同，有的直接拒读目录）→ `null`，温度降档不触发，UI 明示。
-  - 启动自检表随 `hello.signals` 下发（`live` / `live(termux-api)` / `mock` / `unavailable` / `no_client`），运行中有变化再推 `{"t":"signals"}`；UI 对 `unavailable` 显示横幅。
+  - 启动自检表随 `hello.signals` 下发（`live` / `live(termux-api)` / `mock` / `unavailable` / `no_client`），运行中有变化再推 `{"t":"signals"}`；同一张表也在 `GET /api/health` 里，真机核对不用截图：`curl -s localhost:8765/api/health`。
 - **亮屏状态不再是传感器读取，而是事件上报**（评审裁决 #5）：
   - 非 root 的 Termux 调 `dumpsys power` 需要 DUMP 权限，普通 uid 会被拒，所以"读不到就当亮屏"在真机上是常态路径，会让省电整条链路失效。
   - M1：网页 UI 用 Page Visibility API，`visibilitychange` 时发 `{"t":"screen","on":false}`；打开页面立即上报一次，**可见时每 45s 重报一次**（`reportStaleMs` 默认 10 分钟，服务端把任意上行消息都视为该客户端存活）。
@@ -138,7 +140,7 @@ P1 也做了最小版本：挂机点记录/返回、事件通知（掉线/死亡
 ## 开发与验证
 
 ```bash
-npm test          # 148 个用例：档位状态机/迟滞/不对称去抖/亮屏权威/信号三态/退避/协议/背包安全/丢弃点预检/重生熔断/桥接端到端
+npm test          # 155 个用例：档位状态机/迟滞/不对称去抖/亮屏权威/信号三态/退避/协议/背包安全/丢弃点预检/重生熔断/桥接端到端
 npm run check     # 全量 node --check
 MCBOT_MOCK_POWER='{"battery":15,"screenOn":false}' npm start   # 不插真机也能看档位
 ```

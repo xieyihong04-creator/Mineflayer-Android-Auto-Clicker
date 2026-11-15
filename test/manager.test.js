@@ -7,7 +7,7 @@ const { PowerTierController } = require('../src/power/tier')
 const { deepMerge } = require('../src/config')
 const { FakeBot, makeConfig, fakeLogger, navStub } = require('./helpers')
 
-function makeManager (configPatch = {}, { createBot, nav } = {}) {
+function makeManager (configPatch = {}, { createBot, nav, now } = {}) {
   const config = makeConfig({
     server: { host: 'mc.example.com', port: 25565, username: 'Tester' },
     ...configPatch
@@ -21,12 +21,13 @@ function makeManager (configPatch = {}, { createBot, nav } = {}) {
     persist () {}
   }
   const logger = fakeLogger()
-  const tier = new PowerTierController({ config })
+  const tier = new PowerTierController({ config, now })
   const bots = []
   const manager = new BotManager({
     configStore: store,
     logger,
     tier,
+    now,
     nav: nav || navStub(),
     createBot: createBot || (() => {
       const bot = new FakeBot()
@@ -452,4 +453,70 @@ test('signal self-check: table is pushed once per change, not per poll', () => {
   manager.updatePower({ ...signals, availability: { battery: 'unavailable', charging: 'live', thermal: 'live', powerSave: 'live' } })
   assert.equal(pushes.length, 2)
   assert.equal(pushes[1].signals.battery.status, 'unavailable')
+})
+
+// ------------------------------------------------------------------ M2 native
+
+function clock () {
+  let t = 1000
+  return { now: () => t, tick: (ms) => { t += ms } }
+}
+
+const liveAll = { battery: 'live', charging: 'live', thermal: 'live', powerSave: 'live' }
+const sysfsSignals = {
+  battery: 80,
+  charging: false,
+  thermal: 0,
+  thermalDelta: 0,
+  thermalBaselineC: 43.1,
+  thermalZone: 'quiet_therm',
+  powerSave: false,
+  availability: liveAll
+}
+
+test('M2: native thermal status is primary, reaches L0 without any sysfs delta', () => {
+  const c = clock()
+  const { manager, tier } = makeManager({}, { now: c.now })
+  manager.updatePower(sysfsSignals)
+  assert.equal(tier.mode, 'L2')
+  assert.equal(manager.reportNativeThermal(2), 'L2', 'L2 -> L0 still debounces like any downgrade')
+  c.tick(10000)
+  assert.equal(manager.reportNativeThermal(2), 'L0')
+  const row = manager.signalTable().thermal
+  assert.equal(row.source, 'android-native')
+  assert.equal(row.status, 'live')
+  assert.equal(row.native, 2)
+  assert.equal(row.baseline, 'ready', 'sysfs baseline is still reported alongside')
+  assert.equal(manager.powerSnapshot().thermalNative, 2)
+})
+
+test('M2: a stale native report expires instead of pinning the tier', () => {
+  const c = clock()
+  const { manager, tier } = makeManager({}, { now: c.now })
+  manager.updatePower(sysfsSignals)
+  manager.reportNativeThermal(3)
+  c.tick(10000)
+  assert.equal(manager.reportNativeThermal(3), 'L0')
+  c.tick(manager.nativeStaleMs + 1)
+  manager.updatePower(sysfsSignals)
+  assert.equal(tier.mode, 'L1', 'no app + no UI client: back to L1 immediately, never stuck in L0')
+  const row = manager.signalTable().thermal
+  assert.equal(row.source, 'sysfs')
+  assert.equal(row.native, null)
+  assert.equal(manager.powerSnapshot().thermalNative, null)
+})
+
+test('M2: native isPowerSaveMode overrides the unreadable settings value', () => {
+  const c = clock()
+  const { manager, tier } = makeManager({}, { now: c.now })
+  manager.updatePower({ ...sysfsSignals, powerSave: null, availability: { ...liveAll, powerSave: 'unavailable' } })
+  assert.equal(manager.signalTable().powerSave.status, 'unavailable')
+  assert.equal(manager.reportNativePowerSave(true), 'L2')
+  c.tick(10000)
+  assert.equal(manager.reportNativePowerSave(true), 'L0')
+  const row = manager.signalTable().powerSave
+  assert.equal(row.source, 'android-native')
+  assert.equal(row.status, 'live')
+  assert.equal(manager.powerSnapshot().powerSaveNative, true)
+  assert.equal(c.now(), 11000)
 })

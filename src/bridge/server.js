@@ -215,6 +215,12 @@ class BridgeServer {
         return { ok: true }
       case 'screen':
         return { ok: true, mode: this.manager.reportScreen(payload.on, (ws && ws.__clientId) || 'default') }
+      // M2 native signals from the WebView shell. Additive in v1: older clients
+      // never send them, and nothing depends on them being present.
+      case 'thermal':
+        return { ok: true, mode: this.manager.reportNativeThermal(payload.value) }
+      case 'powerSave':
+        return { ok: true, mode: this.manager.reportNativePowerSave(payload.on) }
       case 'waypoint': {
         if (payload.action === 'save') return this.manager.saveWaypoint(payload.name)
         if (payload.action === 'go') return this.manager.goWaypoint(payload.name)

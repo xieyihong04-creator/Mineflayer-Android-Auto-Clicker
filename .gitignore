@@ -5,3 +5,12 @@ logs/
 .auth/
 *.log
 .DS_Store
+
+# Android shell (M2)
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.apk
+*.iml

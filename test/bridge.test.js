@@ -293,3 +293,29 @@ test('bridge: multi-client screen aggregation is any-on-wins, and disconnect re-
   assert.deepEqual(Object.keys(manager.screen.snapshot().reports), [hello1.clientId])
   assert.equal(manager.tier.lastSignals.screenOn, true, 'remaining observer still wins')
 })
+
+test('bridge: M2 native thermal/powerSave messages drive the manager and health', async (t) => {
+  const { client, ws, manager, server } = await setup(t)
+  await client.wait((m) => m.t === 'hello')
+
+  ws.send(JSON.stringify({ t: 'thermal', value: 2, id: 31 }))
+  const ack = await client.wait((m) => m.t === 'ack' && m.id === 31)
+  assert.equal(ack.ok, true)
+  assert.equal(manager.native.thermal, 2)
+  assert.equal(manager.signalTable().thermal.source, 'android-native')
+
+  ws.send(JSON.stringify({ t: 'powerSave', on: true, id: 32 }))
+  await client.wait((m) => m.t === 'ack' && m.id === 32)
+  assert.equal(manager.native.powerSave, true)
+  assert.equal(manager.signalTable().powerSave.status, 'live')
+
+  const health = JSON.parse((await httpGet(server.port, '/api/health')).body)
+  assert.equal(health.power.thermalNative, 2)
+  assert.equal(health.power.powerSaveNative, true)
+  assert.equal(health.signals.thermal.native, 2)
+
+  ws.send(JSON.stringify({ t: 'thermal', value: 9, id: 33 }))
+  const bad = await client.wait((m) => m.t === 'ack' && m.id === 33)
+  assert.equal(bad.ok, false)
+  assert.equal(manager.native.thermal, 2, 'a rejected value must not be stored')
+})

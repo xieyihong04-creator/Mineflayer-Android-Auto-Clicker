@@ -1,0 +1,46 @@
+name: android-build
+
+on:
+  push:
+    branches: [qoder/general-session-o21ens]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # ubuntu-latest ships some platforms but not necessarily the one
+      # compileSdk asks for; installing explicitly keeps the build reproducible.
+      - name: Install SDK platform 35
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null; "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" "platform-tools"
+
+      - name: Build debug APK
+        # The wrapper is committed, so CI and a local build use the same Gradle.
+        run: ./gradlew assembleDebug --no-daemon --stacktrace --console=plain
+
+      - name: Lint (report only, non-blocking)
+        run: ./gradlew lintDebug --no-daemon --console=plain || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcbot-android-debug
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14

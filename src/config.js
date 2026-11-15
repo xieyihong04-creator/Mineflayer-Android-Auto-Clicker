@@ -44,7 +44,16 @@ const DEFAULTS = {
       // Selected by `type`, never by zone number (numbering is ROM-specific).
       zoneTypes: ['quiet_therm', 'battery', 'batt_temp', 'charger_therm'],
       // Trip points (95000), voltages (vbat) and current limits are not temps.
-      exclude: ['cpu-hw-trip', 'vbat', 'bcl-lvl', 'ibat-lvl']
+      exclude: ['cpu-hw-trip', 'vbat', 'bcl-lvl', 'ibat-lvl'],
+      // M2 native signal: PowerManager.getCurrentThermalStatus() (0-6). It is
+      // the primary criterion when present; the sysfs delta above is fallback.
+      // 0=NONE (= also what devices without thermal reporting return),
+      // 1=LIGHT, 2=MODERATE, 3=SEVERE, 4=CRITICAL, 5=EMERGENCY, 6=SHUTDOWN.
+      // Default 2: LIGHT is reached under almost any sustained load on modern
+      // phones and would pin L0; MODERATE is the first "really throttling".
+      // A runtime value of 0 (NONE / unsupported) never reaches this
+      // threshold, so it cannot downgrade; config 0/absent means "use 2".
+      nativeL0AtOrAbove: 2
     },
     // Screen state is reported by the UI (Page Visibility API in M1,
     // ACTION_SCREEN_ON/OFF in M2). Querying the system from Termux needs DUMP
@@ -250,6 +259,7 @@ function normalize (input, base = DEFAULTS) {
     ? p.thermal.zoneTypes.map((t) => String(t))
     : DEFAULTS.power.thermal.zoneTypes.slice()
   p.thermal.exclude = Array.isArray(p.thermal.exclude) ? p.thermal.exclude.map((t) => String(t)) : []
+  p.thermal.nativeL0AtOrAbove = clamp(Number(p.thermal.nativeL0AtOrAbove) || 2, 1, 6)
   p.screen.requireClient = p.screen.requireClient !== false
   p.screen.reportStaleMs = clamp(Number(p.screen.reportStaleMs) || 600000, 10000, 3600000)
   p.idleMs = clamp(Number(p.idleMs) || 30000, 5000, 3600000)

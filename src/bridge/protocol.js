@@ -23,9 +23,13 @@ class ProtocolError extends Error {
 // message shapes above are unchanged, and `hello` now carries `protoVersion`
 // so an M2 app can detect a version mismatch on handshake. Upstream `signals`
 // is the additive self-check table (live / unavailable / no_client).
-const DOWN_TYPES = new Set(['cmd', 'goto', 'stop', 'eat', 'toss', 'setMode', 'connect', 'disconnect', 'waypoint', 'screen', 'config', 'ping'])
+// M2 appends two upstream-style reports that the native shell sends over the
+// same socket: `thermal` (PowerManager thermal status 0-6) and `powerSave`
+// (isPowerSaveMode). Both are additive; no existing field or type changes and
+// protoVersion stays 1.
+const DOWN_TYPES = new Set(['cmd', 'goto', 'stop', 'eat', 'toss', 'setMode', 'connect', 'disconnect', 'waypoint', 'screen', 'thermal', 'powerSave', 'config', 'ping'])
 const PROTO_VERSION = 1
-const UP_TYPES = new Set(['state', 'chat', 'inv', 'nav', 'mode', 'log', 'hello', 'error', 'notify', 'auth', 'config', 'signals'])
+const UP_TYPES = new Set(['state', 'chat', 'inv', 'nav', 'mode', 'log', 'hello', 'error', 'notify', 'auth', 'config', 'signals', 'thermal', 'powerSave'])
 
 function num (value, name, { min = -Infinity, max = Infinity } = {}) {
   const n = Number(value)
@@ -99,6 +103,16 @@ function parseDown (raw) {
       return { type, payload: { reason: p.reason === undefined ? 'user' : str(p.reason, 'disconnect.reason', { max: 64 }) } }
     case 'screen': {
       if (typeof p.on !== 'boolean') throw new ProtocolError('screen.on must be a boolean')
+      return { type, payload: { on: p.on } }
+    }
+    case 'thermal': {
+      // PowerManager.THERMAL_STATUS_*: 0 NONE .. 6 SHUTDOWN.
+      const value = num(p.value, 'thermal.value', { min: 0, max: 6 })
+      if (!Number.isInteger(value)) throw new ProtocolError('thermal.value must be an integer 0-6')
+      return { type, payload: { value } }
+    }
+    case 'powerSave': {
+      if (typeof p.on !== 'boolean') throw new ProtocolError('powerSave.on must be a boolean')
       return { type, payload: { on: p.on } }
     }
     case 'waypoint': {

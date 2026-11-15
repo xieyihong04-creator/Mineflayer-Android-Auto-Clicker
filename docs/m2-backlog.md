@@ -15,11 +15,16 @@ M1 已冻结，下面这些**不在 M1 修**，等真机数据回来一起排期
 
 真机观察记录见 `docs/real-device-checklist.md` 第 3 条「关窗残留」。
 
-## 3. 热覆盖（取决于真机自检结果）
+## 3. 热覆盖 —— 已在 M2 实现（待真机验证）
 
-若真机型 `thermal` 自检为 `unavailable`，Node 侧读不到任何 `thermal_zone`，热降档等于不存在。M2 改用 `PowerManager.getCurrentThermalStatus()`（Android 10+，无需 root，但需要原生侧或 termux-api 之外的通路）。等第 2 条真机数据决定是否真的要做。
+Node 侧仍保留 sysfs 基线差值作为 fallback；`android/` 外壳上报 `PowerManager.getCurrentThermalStatus()`（上行 `thermal`），原生值可用时作主判据（≥ `power.thermal.nativeL0AtOrAbove`，默认 2=MODERATE 即强制 L0），5 分钟不刷新自动过期回落。**默认阈值 2 是推断**：LIGHT(1) 在现代手机上持续负载就会进入，用它当 L0 会把 bot 长期钉死。真机跑一段后看 `power.thermalNative` 的分布再定。
 
-## 4. powerSave 用原生 `isPowerSaveMode()`
+## 4. powerSave —— 已在 M2 实现（待真机验证）
 
-`settings get global low_power` 在本机返回字符串 `null`（未设置）而不是 0/1，已按 `unavailable` 处理（不当作"已关闭"来降档）。M2 用 `PowerManager.isPowerSaveMode()` 拿真实值；在那之前，省电模式这一路在真机上大概率是空的，UI 会明示。
+`settings get global low_power` 在本机返回字符串 `null`（未设置）而不是 0/1，已按 `unavailable` 处理（不当作"已关闭"来降档）。M2 外壳上报 `PowerManager.isPowerSaveMode()`（上行 `powerSave`），信号表第五行从 `unavailable` 变成 `live`。未装外壳时行为与 M1 相同。
+
+## 5. 仍未做
+
+- Node 侧没有独立 PRD 文件，M2 的"前置声明"写在 `README.md` 的「M2 外壳」一节；如果后续补 PRD，需同步。
+- 原生 `Termux.RUN_COMMAND`（由应用拉起 Termux 里的 `npm start`）仍是可选项，M2 保持"手动启动 Termux，应用只连接"。
 

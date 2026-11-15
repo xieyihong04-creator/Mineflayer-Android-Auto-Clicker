@@ -219,3 +219,23 @@ test('unknown charging is not "charging": 9% still goes L3 instead of skipping i
   // Upgrade into L3 is immediate; treating null as truthy would keep the radio on.
   assert.equal(tier.update(unknown), 'L3')
 })
+
+test('native thermal status is the primary heat criterion (M2)', () => {
+  const c = clock()
+  const tier = new PowerTierController({ config: makeConfig(), now: c.now })
+  // 0 NONE and 1 LIGHT must not downgrade: LIGHT is reached under any load.
+  assert.equal(tier.compute({ ...awake, thermalNative: 0, thermalDelta: null }), 'L2')
+  assert.equal(tier.compute({ ...awake, thermalNative: 1, thermalDelta: null }), 'L2')
+  assert.equal(tier.compute({ ...awake, thermalNative: 2, thermalDelta: null }), 'L0', 'MODERATE is throttling')
+  assert.equal(tier.compute({ ...awake, thermalNative: 6, thermalDelta: 0 }), 'L0')
+  assert.equal(tier.compute({ ...awake, thermalNative: null, thermalDelta: 7 }), 'L0', 'sysfs delta still works as fallback')
+})
+
+test('native threshold is configurable and a runtime 0 never triggers L0', () => {
+  const c = clock()
+  const strict = new PowerTierController({ config: makeConfig({ power: { thermal: { nativeL0AtOrAbove: 3 } } }), now: c.now })
+  assert.equal(strict.compute({ ...awake, thermalNative: 2 }), 'L2')
+  assert.equal(strict.compute({ ...awake, thermalNative: 3 }), 'L0')
+  const zero = new PowerTierController({ config: makeConfig(), now: c.now })
+  assert.equal(zero.compute({ ...awake, thermalNative: 0, thermalDelta: null }), 'L2', 'NONE is not heat')
+})

@@ -83,7 +83,8 @@ const state = {
   ackSeq: 0,
   waypointName: 'afk',
   signalTable: null,
-  screenOn: false
+  screenOn: false,
+  screenSource: 'unknown'
 }
 
 // ------------------------------------------------------------------ utilities
@@ -133,7 +134,7 @@ function connectWs () {
     state.connected = true
     state.reconnectDelay = 500
     renderConn()
-    reportVisibility()
+    reportScreen()
   })
 
   ws.addEventListener('message', (event) => {
@@ -629,21 +630,68 @@ setInterval(() => {
   }
 }, 1000)
 
-// M1 screen authority: the page tells the core whether the phone screen is on.
-// `visibilitychange` fires on lock/background; unknown always degrades to off.
-// While visible we re-report every 45s so an actively-watching user is never
-// treated as a stale observer (server also refreshes on any upstream message).
+// Screen authority. M2: the Android shell runs a WebView and calls
+// window.mcbotNative.screen(on) from ACTION_SCREEN_ON/OFF, which needs no
+// permission and keeps working while the page is hidden. M1 fallback:
+// `visibilitychange` (desktop browser / plain Termux). Unknown always degrades
+// to off. While an observer is active we re-report every 45s so the server
+// never treats it as stale (server also refreshes on any upstream message).
 const SCREEN_HEARTBEAT_MS = 45000
+let nativeShell = false
+
+function sendUp (msg) {
+  if (state.ws && state.ws.readyState === 1) state.ws.send(JSON.stringify(msg))
+}
+
+function applyScreen (on, source) {
+  state.screenOn = Boolean(on)
+  state.screenSource = source
+  sendUp({ t: 'screen', on: state.screenOn })
+}
+
 function reportVisibility () {
-  const on = !document.hidden
-  state.screenOn = on
-  if (state.ws && state.ws.readyState === 1) {
-    state.ws.send(JSON.stringify({ t: 'screen', on }))
+  applyScreen(!document.hidden, 'ui')
+}
+
+// Re-assert whatever the current authority says (WS opened / heartbeat).
+function reportScreen () {
+  if (nativeShell) sendUp({ t: 'screen', on: state.screenOn })
+  else reportVisibility()
+}
+
+// Called from native via evaluateJavascript. Installed before init so an
+// early broadcast is never lost; `init` carries the current device state.
+window.mcbotNative = {
+  init (payload) {
+    nativeShell = true
+    const p = payload || {}
+    if (typeof p.screenOn === 'boolean') applyScreen(p.screenOn, 'native')
+    else if (state.connected) sendUp({ t: 'screen', on: state.screenOn })
+    if (Number.isInteger(p.thermal)) sendUp({ t: 'thermal', value: p.thermal })
+    if (typeof p.powerSave === 'boolean') sendUp({ t: 'powerSave', on: p.powerSave })
+  },
+  screen (on) {
+    nativeShell = true
+    applyScreen(on, 'native')
+  },
+  thermal (value) {
+    if (Number.isInteger(value)) sendUp({ t: 'thermal', value })
+  },
+  powerSave (on) {
+    if (typeof on === 'boolean') sendUp({ t: 'powerSave', on })
   }
 }
-document.addEventListener('visibilitychange', reportVisibility)
+
+document.addEventListener('visibilitychange', () => {
+  // Native broadcast wins; the WebView's own visibility also goes false while
+  // the screen is off with the shell alive, but it is a weaker signal.
+  if (nativeShell) return
+  reportVisibility()
+})
 setInterval(() => {
-  if (!document.hidden && state.connected) reportVisibility()
+  if (!state.connected) return
+  if (nativeShell) sendUp({ t: 'screen', on: state.screenOn })
+  else if (!document.hidden) reportVisibility()
 }, SCREEN_HEARTBEAT_MS)
 
 renderConn()

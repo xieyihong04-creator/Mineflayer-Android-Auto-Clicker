@@ -60,6 +60,11 @@ class BotManager extends EventEmitter {
       thermalBaselineC: null,
       powerSave: null
     }
+    // M2 native shell reports. Kept separately from the polled sensor values so
+    // a stale native reading can expire and fall back to sysfs/settings instead
+    // of pinning the tier forever if the app dies.
+    this.native = { thermal: null, thermalAt: 0, powerSave: null, powerSaveAt: 0 }
+    this.nativeStaleMs = 300000
     this.lastSignalTableJson = null
     this.uiClients = 0
     this.returnAfterReconnect = false
@@ -458,14 +463,46 @@ class BotManager extends EventEmitter {
       clientCount: this.uiClients,
       fallback: this.lastSignals.screenHint
     })
+    const nativeThermal = this.nativeValue('thermal')
+    const nativePowerSave = this.nativeValue('powerSave')
     const next = this.tier.update({
       ...this.lastSignals,
+      // PowerManager's own calibrated status is the primary heat signal when
+      // the app is alive; the sysfs delta stays as the fallback.
+      thermalNative: nativeThermal,
+      powerSave: nativePowerSave === null ? this.lastSignals.powerSave : nativePowerSave,
       screenOn: screen.on,
       screenSource: screen.source,
       navActive: this.nav.active,
       idle: this.isIdle()
     })
     return next
+  }
+
+  nativeValue (kind) {
+    const value = this.native[kind]
+    if (value === null || value === undefined) return null
+    const at = this.native[`${kind}At`]
+    if (this.now() - at > this.nativeStaleMs) return null
+    return value
+  }
+
+  /** A2/A4/P1: native shell reports PowerManager.THERMAL_STATUS_* (0-6). */
+  reportNativeThermal (value) {
+    this.native.thermal = value
+    this.native.thermalAt = this.now()
+    const mode = this.refreshPower()
+    this.emitSignalTable()
+    return mode
+  }
+
+  /** P1: native `isPowerSaveMode()`, replaces the unreadable `settings` call. */
+  reportNativePowerSave (on) {
+    this.native.powerSave = Boolean(on)
+    this.native.powerSaveAt = this.now()
+    const mode = this.refreshPower()
+    this.emitSignalTable()
+    return mode
   }
 
   /** Bridge tells us how many UI sockets are open. 0 observers => screen off. */
@@ -503,6 +540,8 @@ class BotManager extends EventEmitter {
    */
   signalTable () {
     const avail = this.lastSignals.availability || {}
+    const nativeThermal = this.nativeValue('thermal')
+    const nativePowerSave = this.nativeValue('powerSave')
     const screen = this.screen.snapshot()
     const mock = this.lastSignals.source === 'mock'
     const screenStatus = screen.clients === 0
@@ -519,14 +558,20 @@ class BotManager extends EventEmitter {
       charging: { source: mock ? 'mock' : 'sysfs|termux-api', status: avail.charging || 'unavailable' },
       // `baseline: pending` means the delta is not trusted yet (first minutes
       // after start), so thermal cannot downgrade the tier - say it out loud.
+      // Native PowerManager status wins when present: it is OEM-calibrated and
+      // does not need a baseline, so `status` becomes live even if sysfs is not.
       thermal: {
-        source: mock ? 'mock' : 'sysfs',
-        status: avail.thermal || 'unavailable',
+        source: nativeThermal !== null ? 'android-native' : (mock ? 'mock' : 'sysfs'),
+        status: nativeThermal !== null ? 'live' : (avail.thermal || 'unavailable'),
         baseline: this.lastSignals.thermalBaselineC == null ? 'pending' : 'ready',
-        zone: this.lastSignals.thermalZone || null
+        zone: this.lastSignals.thermalZone || null,
+        native: nativeThermal
       },
       screen: { source: 'ui-events', status: screenStatus },
-      powerSave: { source: mock ? 'mock' : 'settings', status: avail.powerSave || 'unavailable' }
+      powerSave: {
+        source: nativePowerSave !== null ? 'android-native' : (mock ? 'mock' : 'settings'),
+        status: nativePowerSave !== null ? 'live' : (avail.powerSave || 'unavailable')
+      }
     }
   }
 
@@ -541,6 +586,8 @@ class BotManager extends EventEmitter {
       thermalBaselineC: s.thermalBaselineC == null ? null : s.thermalBaselineC,
       thermalDelta: s.thermalDelta == null ? null : s.thermalDelta,
       thermalZone: s.thermalZone || null,
+      thermalNative: this.nativeValue('thermal'),
+      powerSaveNative: this.nativeValue('powerSave'),
       telemetry: s.telemetry || null
     }
   }

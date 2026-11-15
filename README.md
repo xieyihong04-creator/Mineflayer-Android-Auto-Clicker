@@ -1,14 +1,16 @@
 # Mineflayer Android Console · v0.1（M1）
 
-Android 上的 Minecraft Java 挂机 bot 控制台。内核 mineflayer，M1 交付 **Termux 直接跑 Node 服务 + localhost WebSocket + 网页 UI**，用于验证 PRD 中全部 P0 功能；M2 再替换为 Compose 前端与前台服务，M3 视需要打包 nodejs-mobile。
+Android 上的 Minecraft Java 挂机 bot 控制台。内核 mineflayer，M1 交付 **Termux 直接跑 Node 服务 + localhost WebSocket + 网页 UI**，用于验证 PRD 中全部 P0 功能；M2 是**原生 WebView 外壳 + 前台服务 + 原生信号桥**（不做 Compose），M3 视需要打包 nodejs-mobile。
 
 > 项目已从 `mineflayer-android-auto-clicker` 更名为 **mineflayer-android-console**：本项目不做任何输入自动化 / 点击器，"auto-clicker" 会误导。GitHub 仓库名需在网页端同步改名（远端仓库改名不改历史）。
 
 ```
-Compose UI (M2) ──┐
-                  │  WebSocket / JSON (localhost, protocol v1)
-网页 UI (M1) ─────┤
-                  └─ Node: mineflayer + pathfinder + 功耗调度 + 背包/进食
+Android 外壳 (M2) ──┐   WebView 加载 127.0.0.1:<port>
+                    │   + specialUse 前台服务保活
+                    │   + ACTION_SCREEN_ON/OFF、getCurrentThermalStatus()
+网页 UI (M1) ───────┤   isPowerSaveMode() 经 window.mcbotNative 注入
+                    │  WebSocket / JSON (localhost, protocol v1)
+                    └─ Node: mineflayer + pathfinder + 功耗调度 + 背包/进食
 ```
 
 ## 快速开始（Termux）
@@ -48,8 +50,9 @@ src/bot/droppoint.js    丢弃点站立安全 + 可达性预检
 src/bridge/protocol.js  协议 v1 校验与上行构造
 src/bridge/server.js    WS + 静态页面 + 指令分发
 web/                    移动端网页控制台（无构建、无外部依赖）
+android/                M2 原生外壳（WebView + specialUse 前台服务 + 原生信号桥）
 docs/                   真机验收清单
-test/                   162 个 node:test 用例
+test/                   169 个 node:test 用例
 ```
 
 ## P0 验收对照
@@ -67,6 +70,49 @@ test/                   162 个 node:test 用例
 | F9 | `respawn.js` | `death` → 延迟 `respawn()` → 走回挂机点；`windowMs` 内连续 3 次 → 停机 + 通知；重连成功同样回挂机点 |
 
 P1 也做了最小版本：挂机点记录/返回、事件通知（掉线/死亡/食物耗尽/背包满）、配置导入导出。
+
+## M2 外壳（源码已入仓，未在设备上验证）
+
+### 前置声明（先看这一段，别把下面当成已达成）
+
+- **功耗增量仍未测量。** `<0.5%/h` 是**假设**，不是结论；M1 时只有一次「边打字边看屏」的单帧读数（6.8%/h），不能当 idle 值用。
+- **F7 留在 Node，不迁移。** 档位状态机、去抖、迟滞都在 `src/power/`，外壳只送信号。
+- **"原生比 Node 省电"未经证明。** 没有任何 A/B 数据，M2 也不打算用这个当卖点。
+- **被动功耗日志保持默认开启**（`logs/power-<day>.jsonl`），不要求用户做 A/B；只有测量时才用 `MCBOT_POWER_TELEMETRY=0` 关掉，保证单采样源。
+- **`android/` 未编译出 APK。** 本沙箱没有 Android SDK（`ANDROID_HOME` 未设，无 `sdkmanager`/`platform-tools`），源码是照 API 契约写的，**没有一次真实构建**。M2 的五条验收因此全部处于"未验证"。
+
+### 架构
+
+WebView 外壳加载 `http://127.0.0.1:<port>`（默认 8765，可用 `--es port 18770` 覆盖），不重写 UI、不做 Compose。前台服务只负责保活；原生值通过 `window.mcbotNative` 注入页面，再走已有的 WS 上行，因此协议和档位逻辑都不需要分叉。
+
+| 项 | 做法 | 理由 |
+|---|---|---|
+| A1 保活 | `foregroundServiceType="specialUse"` + `PROPERTY_SPECIAL_USE_FGS_SUBTYPE` | `dataSync` 在 Android 15 有 6h/24h 配额，会把夜间挂机悄悄掐断 |
+| A2 权限 | Android 13+ 请求 `POST_NOTIFICATIONS`；首次启动申请电池优化白名单 | 没有通知权限时 FGS 照跑但通知不显示，用户会以为已死 |
+| A3 HyperOS | 应用内指引：Termux 与 **Termux:API** 两个包都要「无限制 + 自启动」 | 只设 Termux 时 `termux-battery-status` 会被冻结，表现为信号掉线 |
+| A4 亮屏权威 | `ACTION_SCREEN_ON/OFF`（零权限）→ `window.mcbotNative.screen(on)`；Page Visibility 降为兜底 | 熄屏后 WebView 的 `visibilitychange` 不可靠，而 M1 的权威完全依赖它 |
+| A5 自愈 | `hello.protoVersion` 预检 + 页面已有重连 | 版本错配时给出"更新代码后重启 npm start"，而不是白屏 |
+| P1 温度 | `PowerManager.getCurrentThermalStatus()` → 上行 `thermal` | 主判据；sysfs 基线差值降为 fallback |
+| P1 省电 | `PowerManager.isPowerSaveMode()` → 上行 `powerSave` | 补上第五行信号（`settings get global low_power` 在本机读不到） |
+
+原生值 5 分钟没有刷新就视为过期、自动回落 sysfs/settings，避免外壳被杀后把档位永久钉在 L0。外壳每 60s 重发一次不变的 `thermal`/`powerSave` 作为存活证明。
+
+### 协议：仅新增
+
+`thermal`（`value` 为 0–6 整数，对应 `THERMAL_STATUS_*`）与 `powerSave`（`on` 为布尔）两条上行，**没有改动任何既有字段，`protoVersion` 保持 1**。老页面不发这两条消息时行为与 M1 完全一致。
+
+### 验收（全部未验证，功耗不在其中）
+
+| 项 | 判定方式 | 状态 |
+|---|---|---|
+| APK 可安装 | `./gradlew :app:assembleDebug` + `adb install` | 未构建 |
+| FGS 在 HyperOS 存活 ≥2h | 熄屏 2h 后 `curl -s 127.0.0.1:8765/api/health` 仍有响应 | 未验证 |
+| 亮屏信号来自原生广播 | 熄屏后 `signals.screen.status` 仍为 `live`、`screenSource` 为 native | 未验证 |
+| `thermal`/`powerSave` 从 unavailable → live | `/api/health` 的 `power.thermalNative`、`powerSaveNative` 非 null | 未验证 |
+| WS 自愈 | 杀进程/断网后页面自动回到 `online` | 未验证 |
+
+M2 **不以功耗为验收项**；162→169 个测试通过只证明 Node 侧契约没坏，**不是省电证据**。
+
 
 ## 功耗分级实现细节
 
@@ -125,9 +171,9 @@ P1 也做了最小版本：挂机点记录/返回、事件通知（掉线/死亡
              "bridge":null},                                     // | "unavailable(selinux)" | "unavailable(no-bridge)" | "mock"
   "charging":{"source":"sysfs|termux-api","status":"live(termux-api)"},
   "thermal":{"source":"sysfs","status":"live",
-             "baseline":"ready","zone":"quiet_therm"},           // baseline: "pending" 时热降档不生效
+             "baseline":"ready","zone":"quiet_therm","native":null}, // M2 原生时 source=android-native, native=0..6
   "screen":{"source":"ui-events","status":"no_client"},          // | "live" | "unknown"
-  "powerSave":{"source":"settings","status":"live"}              // 读不到 -> "unavailable"，按未开启处理
+  "powerSave":{"source":"settings","status":"live"}              // 读不到 -> "unavailable"，按未开启处理；M2 原生时 source=android-native
 }}
 ```
 
@@ -140,17 +186,19 @@ P1 也做了最小版本：挂机点记录/返回、事件通知（掉线/死亡
 {"t":"toss","mode":"cleanup"}        // 或 {"mode":"stack","slot":36}
 ```
 
-对冻结协议只做了**新增**，没有改字段：`disconnect`（UI 主动断开）、`waypoint`（P1 挂机点）、`screen`（亮屏事件上报，M1 的 Page Visibility）。`hello` 增加 `protoVersion`（当前为 1）和每个 socket 的 `clientId`（多客户端聚合与断线重算用），M2 的 App 可在握手时检测版本错配；页面与服务端版本不一致会在 UI 顶部提示。消息可带 `id`，服务端回 `{"t":"ack","id":...}`。
+对冻结协议只做了**新增**，没有改字段：`disconnect`（UI 主动断开）、`waypoint`（P1 挂机点）、`screen`（亮屏事件上报，M1 的 Page Visibility）、`thermal` / `powerSave`（M2 外壳的原生值）。`hello` 增加 `protoVersion`（当前为 1）和每个 socket 的 `clientId`（多客户端聚合与断线重算用），M2 的 App 可在握手时检测版本错配；页面与服务端版本不一致会在 UI 顶部提示。消息可带 `id`，服务端回 `{"t":"ack","id":...}`。
 
 ```jsonc
-{"t":"screen","on":false}            // UI 可见性变化
+{"t":"screen","on":false}            // UI 可见性变化（M2 由 ACTION_SCREEN_ON/OFF 驱动）
+{"t":"thermal","value":2}            // PowerManager 热状态 0-6，MODERATE(2) 起强制 L0
+{"t":"powerSave","on":true}          // isPowerSaveMode()
 {"t":"ack","id":9,"ok":true,"dropPoint":{"ok":true,"checked":true,"standing":{"x":11,"y":64,"z":10}}}
 ```
 
 ## 开发与验证
 
 ```bash
-npm test          # 162 个用例：档位状态机/迟滞/不对称去抖/亮屏权威/信号三态/白名单温度/基线增量/退避/协议/背包安全/丢弃点预检/重生熔断/桥接端到端
+npm test          # 169 个用例：档位状态机/迟滞/不对称去抖/亮屏权威/信号三态/白名单温度/基线增量/退避/协议/背包安全/丢弃点预检/重生熔断/桥接端到端
 npm run check     # 全量 node --check
 MCBOT_MOCK_POWER='{"battery":15,"screenOn":false}' npm start   # 不插真机也能看档位
 MCBOT_DEBUG_PROTOCOL=1 npm start                               # 协议层追踪（默认关，很吵）
@@ -172,12 +220,12 @@ M1 已实测：服务启动、静态页、WS 握手、非法指令拒绝、真�
 - **Termux:API 是电量的硬依赖**：sysfs `capacity` 在部分机型不可读，最终要落到 `termux-battery-status`；没装 Termux:API App + 包时电量状态为 `unavailable`，档位停在 L1，UI 会明示。省电模式读取失败同理降级，不影响挂机。
 - **温度按 `type` 取白名单 zone**（`quiet_therm`/`battery`/`batt_temp`/`charger_therm`），不按编号、不取全局限最高温：`cpu-hw-trip-*` 的 95000 和 `vbat` 的 4017 都是“看起来像温度”的陷阱。白名单全落空则 `unavailable(no-zone)`，不会把“读不到”当成 NONE=0。
 - 容器丢点推荐漏斗/箱子/木桶；`dropper/dispenser/工作台/熔炉` 也在允许集合内，但只有打开后 `emptySlotCount()>0` 才会继续 deposit。潜影盒同样支持。
-- **功耗目标改为 `<0.5%/h` 的“增量”**（≈0.14 W），不再是 PRD 的 `<3%/h`：本机满容量约 7100 mAh / 27.4 Wh，3%/h = 0.82 W，比整机熄屏 baseline 还高，达标没有意义。增量 = 开 bot 的 30 分钟功率中位数 − 同条件熄屏 baseline 中位数，**待实测校准**。
+- **功耗目标改为 `<0.5%/h` 的“增量”（假设，未测量）**：本机满容量约 7100 mAh / 27.4 Wh，PRD 的 3%/h = 0.82 W 比整机熄屏 baseline 还高，达标没有意义，所以换成增量 ≈0.14 W。增量 = 开 bot 的 30 分钟功率中位数 − 同条件熄屏 baseline 中位数。**目前一个数都没测，任何“已达标”的说法都不成立。**
 - `RSS < 150MB`、`72h 连续在线` 仍属实测指标，当前环境无法测；`MCBOT_MOCK_POWER` 可让档位逻辑在真机上做 A/B。
 - **功率/cycle/满容量估算只进 jsonl 日志**（`logs/power-<day>.jsonl`，L0 也照写），不做界面：`DEBUG` 与遥测都不该占用 UI。
 - **测量时只能有一个采样源**：bot 内部是 10 s 一条，脚本探针是 60 s 一条；两者同时跑就是 7 次/分 vs 1 次/分，差值里会混进探针本身的开销。所以 `MCBOT_POWER_TELEMETRY=0` 关掉内部日志，`ondevice-once.sh` 启动 bot 时默认带上它，两种模式都只剩脚本的 1 次/分。
 - `fullMah` 外推只在 **30–80% 且稳定放电**时记录，充电中/低电量/字段冲突一律 `null`：`charge_counter` 的线性外推在这些区间误差会被放大，会污染容量趋势。
-- `nodejs-mobile` 打包（M3）未做，M2 继续用 Termux。
+- `nodejs-mobile` 打包（M3）未做，M2 继续用 Termux 跑 Node；`android/` 外壳未编译（沙箱无 Android SDK），见上文 M2 段落。
 - WS 只监听 `127.0.0.1` 且无鉴权；**不要把端口暴露到局域网**。
 
 ## 风险对策落地

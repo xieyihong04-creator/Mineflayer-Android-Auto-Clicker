@@ -82,3 +82,15 @@ test('hello advertises protoVersion so an M2 app can detect a mismatch', () => {
   assert.equal(hello.protocol, 1)
   assert.equal(hello.protoVersion, 1)
 })
+
+test('thermal/powerSave upstream are additive v1 (M2 shell), protoVersion unchanged', () => {
+  assert.deepEqual(parseDown({ t: 'thermal', value: 2 }), { type: 'thermal', payload: { value: 2 } })
+  assert.deepEqual(parseDown({ t: 'thermal', value: 0 }), { type: 'thermal', payload: { value: 0 } })
+  assert.deepEqual(parseDown({ t: 'powerSave', on: true }), { type: 'powerSave', payload: { on: true } })
+  assert.throws(() => parseDown({ t: 'thermal', value: 7 }), ProtocolError)
+  assert.throws(() => parseDown({ t: 'thermal', value: 1.5 }), /integer 0-6/)
+  assert.throws(() => parseDown({ t: 'thermal' }), ProtocolError)
+  assert.throws(() => parseDown({ t: 'powerSave', on: 'yes' }), /powerSave.on must be a boolean/)
+  const hello = helloMessage({ mode: 'L2' })
+  assert.equal(hello.protoVersion, 1, 'new message types do not bump the version')
+})

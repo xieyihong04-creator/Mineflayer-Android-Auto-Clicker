@@ -29,7 +29,8 @@
       "baselineWindowMs": 180000,
       "baselineMinSamples": 3,
       "zoneTypes": ["quiet_therm", "battery", "batt_temp", "charger_therm"],
-      "exclude": ["cpu-hw-trip", "vbat", "bcl-lvl", "ibat-lvl"]
+      "exclude": ["cpu-hw-trip", "vbat", "bcl-lvl", "ibat-lvl"],
+      "nativeL0AtOrAbove": 2
     },
     "screen": {
       "requireClient": true,

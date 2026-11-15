@@ -10,9 +10,10 @@ const RANK = { L2: 3, L1: 2, L0: 1, L3: 0 }
  *   1. L3  battery < 10% (unless charging) -> immediate, latched, no debounce.
  *          Leaves L3 only when charging or battery >= l3ExitAbove (20%),
  *          never at the entry threshold: that is the hysteresis.
- *   2. L0  thermal delta >= l0DeltaC / power-save. Hardware safety beats a
- *          manual override: a hot phone must back off even if the user pinned
- *          L2. The delta is measured above a learned baseline, never absolute.
+ *   2. L0  native thermal status >= nativeL0AtOrAbove / sysfs thermal delta >=
+ *          l0DeltaC / power-save. Hardware safety beats a manual override: a
+ *          hot phone must back off even if the user pinned L2. The delta is
+ *          measured above a learned baseline, never absolute.
  *   3. manual forced tier (UI "强制 L2")  -> immediate
  *   4. L0  battery < 20%
  *   5. L1  screen off && not navigating && idle for >= idleMs
@@ -37,6 +38,7 @@ class PowerTierController {
       charging: false,
       thermal: null,
       thermalDelta: null,
+      thermalNative: null,
       screenOn: false, // fail-safe: no observer yet
       screenSource: 'unknown',
       navActive: false,
@@ -71,7 +73,11 @@ class PowerTierController {
     }
 
     // Heat and battery-saver are hardware constraints, not user preferences.
-    // A null delta means the baseline is still warming up: no downgrade.
+    // The platform's own thermal status wins when the shell reports it; the
+    // sysfs delta is only the fallback. Native 0 (NONE / unsupported) never
+    // downgrades, and a null delta means the baseline is still warming up.
+    const thermalNative = Number.isInteger(signals.thermalNative) ? signals.thermalNative : null
+    if (thermalNative !== null && thermalNative >= p.thermal.nativeL0AtOrAbove) return 'L0'
     if (thermalDelta !== null && thermalDelta >= p.thermal.l0DeltaC) return 'L0'
     if (signals.powerSave) return 'L0'
 

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MCBOT 控制台</string>
+    <string name="fgs_channel">桥接常驻</string>
+    <string name="fgs_channel_desc">熄屏时保持控制台与本地桥接存活</string>
+    <string name="fgs_title">MCBOT 桥接运行中</string>
+    <string name="fgs_text">正在连接本机 127.0.0.1 上的 Node 核心</string>
+
+    <string name="core_waiting">正在等待 Termux 里的 Node 核心…\n\n请先在 Termux 中执行：\n  cd ~/mineflayer-android-auto-clicker\n  npm start\n\n端口 %1$d（默认 8765；如果配置改成了 18770，请长按图标后用 --es port 18770 启动）</string>
+    <string name="core_waiting_hint">等待中…</string>
+    <string name="retry">重试</string>
+    <string name="hyperos_guide">HyperOS 后台设置</string>
+    <string name="proto_mismatch">核心协议版本 %1$d 与应用不匹配（应用需要 %2$d）。请更新代码后重启 npm start。</string>
+
+    <string name="hyperos_body">HyperOS / MIUI 会在熄屏后杀掉后台进程。下面两项都必须做，否则 Termux 或 Termux:API 会在几分钟内被冻结：\n\n1) Termux（com.termux）\n   · 设置 → 应用设置 → Termux → 省电策略 → 无限制\n   · 自启动 → 打开\n   · 后台弹出界面 / 显示在其他应用上层 → 允许\n\n2) Termux:API（com.termux.api）\n   · 同样设置：省电策略无限制 + 自启动打开\n   · 只装 pkg install termux-api 而没有安装 Termux:API 应用时，termux-battery-status 会一直返回空。\n\n3) 本应用（MCBOT 控制台）\n   · 省电策略无限制；允许后台运行\n   · 最近任务卡片下拉加锁，防止一键清理\n\n做完后回到这个页面点“重试”。</string>
+    <string name="open_app_settings">打开应用设置</string>
+    <string name="close">关闭</string>
+</resources>

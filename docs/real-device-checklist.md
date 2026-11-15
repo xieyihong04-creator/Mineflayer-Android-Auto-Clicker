@@ -4,6 +4,14 @@
 
 准备：一台 Android 手机 + Termux + 同一局域网的 MC Java 服务器（1.20.x，关掉白名单或加 bot 账号）。`config.json` 用 `config.example.json` 起手，先只填 `server.host/port`、`auth.type`。
 
+**第 1、2 条和第 8 条的 30 分钟采样可以一条命令跑完**：
+
+```bash
+bash scripts/ondevice-once.sh          # 端口默认读 config.json，可用 MCBOT_PORT=18770 覆盖
+```
+
+它会检桥、打硬件档案（机型/ROM/`power_supply`/白名单温度）、起 bot 并提示设备码、后台采 30 分钟功率，最后产出 `logs/ondevice-<时间>/report.txt`。探针参数（60 s × 30 次 + wake-lock）是固定的，别改，否则和后续对照测量没法抵消开销。
+
 ---
 
 ## 1. 微软设备码授权 + token 刷新后重连
@@ -22,7 +30,8 @@
   ```
   - 电量：`signals.battery.status` 为 `live`（sysfs）或 `live(termux-api)`。`cat /sys/class/power_supply/battery/capacity` 读不到时先确认节点名（`battery`/`BATTERY`/`bms`/`BAT0`…，程序会按 `type == Battery` 扫）；仍不行再 `termux-battery-status`（需先 `pkg install termux-api` + 装 Termux:API App）。两者都失败必须是 `unavailable`，**不能显示 100%**。
   - 充电：`signals.charging.status` 单独一行。`capacity` 和 `status` 是两个文件，可能一个读得到一个读不到；读不到时 UI 显示「未知」，并按**未充电**处理（低电量照样 L3 断开）。
-  - 温度：`signals.thermal.status` 为 `live` 或 `unavailable`；`unavailable` 时 UI 明示且 L0 温度降档不触发。
+  - 温度：`signals.thermal.status` 为 `live` 且 `zone` 在 `quiet_therm`/`battery`/`batt_temp`/`charger_therm` 之内（按 `type` 选，不认编号）；刚启动时 `baseline: pending` 属正常，约 3 分钟后变 `ready` 并出现 `thermalDelta`。
+  - **本机已知平台事实**：Xiaomi 2509FPN0BC 的 `/sys/class/power_supply` 是 EACCES（SELinux，无 root 永久不可用），所以 `unavailable(selinux)` 是**预期**结果，不是失败；这一条通过的条件是 `battery.status = live(termux-api)` 且 `bridge = null`。
   - **把 `battery` / `charging` / `thermal` 三行的原样值记下来**（机型 + ROM + 这三行），这决定 F7 留在 Node 还是要挪到 Android 原生。
 - **电量不可用时的档位**：临时屏蔽两种读数 → 档位应停在 **L1**（不是 L2、也不是 L0），UI 有告警。
 - **可达**：站在出生点，`goto` 到 30 格外一个已知坐标。
@@ -80,7 +89,8 @@
 ## 8. baseline 功耗实测（唯一能定义"省电"的数据）
 
 - **步骤**：① 手机充满、熄屏、飞行模式关、仅挂充电器待机 1 小时 → 记录电量差（baseline）。② 装 bot、同样条件 1 小时 → 记录差值。
-- **通过**：`(装后 - baseline) < 3%/h` 是 PRD 的目标值，**先测再校准**；记录机型、ROM、电量、温度。`<3%/h` 不是已知结论，是待验证目标。
+- **通过**：**增量 `<0.5%/h`（≈0.14 W）**，且这是待校准目标不是已知结论。PRD 原来的 `<3%/h` 已作废：本机满容量 7100 mAh / 27.4 Wh，3%/h = 0.82 W，比整机熄屏 baseline 还高，达标没有意义。
+- **算法**：增量 = 开 bot 的功率中位数 − 同条件 baseline 中位数；两者都要同一探针参数（60 s × 30 次）、同一机型温度区间。`logs/power-<day>.jsonl` 里有每 10 s 一条的原始 W/cycle/满容量估算。
 - **建议**：同一晚跑两次取平均；把 `power.stateHz`、`viewDistance.l0` 作为两组对照。
 
 ## 9. RSS 实测（对 150MB 那条线）

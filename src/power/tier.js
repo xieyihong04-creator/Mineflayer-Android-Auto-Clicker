@@ -10,8 +10,9 @@ const RANK = { L2: 3, L1: 2, L0: 1, L3: 0 }
  *   1. L3  battery < 10% (unless charging) -> immediate, latched, no debounce.
  *          Leaves L3 only when charging or battery >= l3ExitAbove (20%),
  *          never at the entry threshold: that is the hysteresis.
- *   2. L0  thermal >= MODERATE / power-save. Hardware safety beats a manual
- *          override: a hot phone must back off even if the user pinned L2.
+ *   2. L0  thermal delta >= l0DeltaC / power-save. Hardware safety beats a
+ *          manual override: a hot phone must back off even if the user pinned
+ *          L2. The delta is measured above a learned baseline, never absolute.
  *   3. manual forced tier (UI "强制 L2")  -> immediate
  *   4. L0  battery < 20%
  *   5. L1  screen off && not navigating && idle for >= idleMs
@@ -34,7 +35,8 @@ class PowerTierController {
     this.lastSignals = {
       battery: null,
       charging: false,
-      thermal: 0,
+      thermal: null,
+      thermalDelta: null,
       screenOn: false, // fail-safe: no observer yet
       screenSource: 'unknown',
       navActive: false,
@@ -48,6 +50,10 @@ class PowerTierController {
     const battery = Number.isFinite(signals.battery) ? signals.battery : null
     const charging = Boolean(signals.charging)
     const skipL3 = charging && p.battery.l3SkipWhileCharging
+    // Heat is measured against the per-device baseline, never as an absolute
+    // number: idle body temperature on real hardware is already ~43 C, so an
+    // absolute threshold would pin the bot in L0 for the whole session.
+    const thermalDelta = Number.isFinite(signals.thermalDelta) ? signals.thermalDelta : null
 
     if (this.l3Latched) {
       // Losing the battery reading is not proof of recovery: stay latched.
@@ -65,7 +71,8 @@ class PowerTierController {
     }
 
     // Heat and battery-saver are hardware constraints, not user preferences.
-    if (Number(signals.thermal) >= p.thermal.l0AtOrAbove) return 'L0'
+    // A null delta means the baseline is still warming up: no downgrade.
+    if (thermalDelta !== null && thermalDelta >= p.thermal.l0DeltaC) return 'L0'
     if (signals.powerSave) return 'L0'
 
     if (this.forcedMode) return this.forcedMode

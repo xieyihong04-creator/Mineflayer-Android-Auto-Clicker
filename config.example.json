@@ -25,7 +25,11 @@
       "l3SkipWhileCharging": true
     },
     "thermal": {
-      "l0AtOrAbove": 2
+      "l0DeltaC": 7,
+      "baselineWindowMs": 180000,
+      "baselineMinSamples": 3,
+      "zoneTypes": ["quiet_therm", "battery", "batt_temp", "charger_therm"],
+      "exclude": ["cpu-hw-trip", "vbat", "bcl-lvl", "ibat-lvl"]
     },
     "screen": {
       "requireClient": true,

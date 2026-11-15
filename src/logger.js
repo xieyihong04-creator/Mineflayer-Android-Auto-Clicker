@@ -17,6 +17,8 @@ class Logger {
     this.buffer = []
     this.subscribers = new Set()
     this.stream = null
+    this.sampleStream = null
+    this.sampleDay = null
     this.seq = 0
     if (fileEnabled) this.openStream()
   }
@@ -82,6 +84,26 @@ class Logger {
   warn (msg, extra) { return this.log('warn', msg, extra) }
   error (msg, extra) { return this.log('error', msg, extra) }
   debug (msg, extra) { return this.log('debug', msg, extra) }
+
+  /**
+   * Power/telemetry samples go to `logs/power-<day>.jsonl` and are NOT gated by
+   * `setFileEnabled`: L1/L0 stops writing the event log (PRD §4), but the power
+   * numbers are the only data that can answer "<0.5%/h", and they matter most
+   * exactly while the phone is idle. One line per poll, no UI work.
+   */
+  sample (obj) {
+    try {
+      const day = new Date().toISOString().slice(0, 10)
+      if (!this.sampleStream || this.sampleDay !== day) {
+        if (this.sampleStream) this.sampleStream.end()
+        fs.mkdirSync(this.dir, { recursive: true })
+        this.sampleDay = day
+        this.sampleStream = fs.createWriteStream(path.join(this.dir, `power-${day}.jsonl`), { flags: 'a' })
+        this.sampleStream.on('error', () => { this.sampleStream = null })
+      }
+      this.sampleStream.write(`${JSON.stringify({ ts: Date.now(), ...obj })}\n`)
+    } catch {}
+  }
 
   recent (limit = 100) {
     return this.buffer.slice(-limit)

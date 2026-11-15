@@ -18,3 +18,8 @@ M1 已冻结，下面这些**不在 M1 修**，等真机数据回来一起排期
 ## 3. 热覆盖（取决于真机自检结果）
 
 若真机型 `thermal` 自检为 `unavailable`，Node 侧读不到任何 `thermal_zone`，热降档等于不存在。M2 改用 `PowerManager.getCurrentThermalStatus()`（Android 10+，无需 root，但需要原生侧或 termux-api 之外的通路）。等第 2 条真机数据决定是否真的要做。
+
+## 4. powerSave 用原生 `isPowerSaveMode()`
+
+`settings get global low_power` 在本机返回字符串 `null`（未设置）而不是 0/1，已按 `unavailable` 处理（不当作"已关闭"来降档）。M2 用 `PowerManager.isPowerSaveMode()` 拿真实值；在那之前，省电模式这一路在真机上大概率是空的，UI 会明示。
+

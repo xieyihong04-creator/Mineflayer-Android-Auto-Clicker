@@ -49,7 +49,7 @@ adb shell am start -n dev.mcbot.console.probe/.MainActivity \
 |---|---|---|
 | mineflayer 依赖树无原生模块 | **已证明** | 98 个包，零 `.node`/`binding.gyp` |
 | mineflayer 能在 Node 18.20.4 上加载并 spawn | **已证明** | 本机 vanilla 1.20.1，905 ms；探针脚本 1247 ms |
-| 探针 APK 能构建 | **已证明（本地）** | 本机 `:probe:assembleDebug` 绿；CI `probe` job 见 workflow |
+| 探针 APK 能构建 | **已证明（本地 + CI）** | 本机 `:probe:assembleDebug` 绿；CI run 43707042963 的 `probe` job 绿，产物 `mcbot-m3-probe`（26.9 MB zip） |
 | JNI 符号接了 `node::Start` | **已证明（静态）** | `libnative-lib.so` 导入 `_ZN4node5StartEiPPc`，`libnode.so` 导出同名符号 |
 | **libnode.so 在 Android 上起得来** | **未验证** | 需要真机 |
 | **Android 上 mineflayer 能连上** | **未验证** | 同上 |

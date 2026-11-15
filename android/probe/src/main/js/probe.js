@@ -18,6 +18,7 @@
 
 const http = require('http')
 const fs = require('fs')
+const os = require('os')
 const path = require('path')
 
 const STATUS_PORT = 3999
@@ -71,7 +72,8 @@ const status = {
   authState: 'none',
   authName: null,
   authError: null,
-  authDir: AUTH_DIR
+  authDir: AUTH_DIR,
+  localIps: localIps()
 }
 
 function step (name, ok, detail, elapsed) {
@@ -136,6 +138,29 @@ function refreshAuthState () {
   }
 }
 
+// A refused or timed-out game socket is NOT a login failure. The old code marked
+// every failed attempt as authState='failed', so "ECONNREFUSED 127.0.0.1" showed
+// up as "登录失败" even though the tokens were fine.
+function isAuthFailure (detail) {
+  const d = String(detail || '')
+  return /AADSTS|invalid_grant|invalid_client|unauthori[sz]ed|bad login|401|403|auth|Xbox|XSTS|xboxlive|login\.live|login\.microsoftonline|device code|设备码|Failed to (?:obtain|authenticate)/i.test(d)
+}
+
+// Server address must be the LAN IP of the machine running Minecraft, not the
+// phone. Showing the phone's own IPs makes 127.0.0.1 obviously wrong.
+function localIps () {
+  const out = []
+  try {
+    const ifs = os.networkInterfaces()
+    for (const name of Object.keys(ifs)) {
+      for (const info of ifs[name] || []) {
+        if (info.family === 'IPv4' && !info.internal) out.push(info.address)
+      }
+    }
+  } catch (e) {}
+  return out
+}
+
 let mineflayer = null
 try {
   mineflayer = require('mineflayer')
@@ -194,6 +219,7 @@ function connectOnce () {
     username: USERNAME,
     auth: wantAuth ? 'microsoft' : 'offline'
   }
+  let onAuthWait = null
   if (wantAuth) {
     status.authState = 'pending'
     status.authError = null
@@ -206,6 +232,9 @@ function connectOnce () {
         message: data.message
       }
       status.authState = 'pending'
+      // Typing a device code takes minutes; the 45 s connect window must not
+      // kill the attempt while the user is still on microsoft.com/link.
+      if (onAuthWait) onAuthWait()
       persist()
     }
   }
@@ -231,9 +260,16 @@ function connectOnce () {
         status.authState = 'ok'
         status.authName = (bot && bot.username) || status.authName
         writeAuthMeta(status.authName)
-      } else {
+      } else if (isAuthFailure(detail)) {
         status.authState = 'failed'
         status.authError = detail || 'login failed'
+      } else {
+        // Tokens are fine; the game server was unreachable. Re-read the cache so
+        // the card shows 已登录 instead of accusing the login of failing.
+        // (refreshAuthState() is a no-op while the state is still 'pending'.)
+        status.authState = 'none'
+        refreshAuthState()
+        status.authError = null
       }
     }
     // Duration of this attempt, not time since boot (the page shows both).
@@ -244,7 +280,17 @@ function connectOnce () {
     clearTimeout(timer)
   }
 
-  const timer = setTimeout(() => finish(false, 'timeout 45s (no spawn)'), 45000)
+  let timer = null
+  const arm = (ms, label) => {
+    clearTimeout(timer)
+    timer = setTimeout(() => finish(false, label), ms)
+  }
+  arm(45000, 'timeout 45s (no spawn)')
+  onAuthWait = () => arm(600000, 'timeout 10min (设备码未完成授权)')
+  // Auth happens before the game socket exists, so the 45 s connect window
+  // only starts once the client is actually connected.
+  bot.once('connect', () => arm(45000, 'timeout 45s (no spawn)'))
+
   abortCurrent = () => {
     clearTimeout(timer)
     finished = true
@@ -320,6 +366,7 @@ ul.steps li:first-child{border-top:0}
 #authbox a{color:var(--warn);word-break:break-all}
 #authbox button.ghost{display:none;background:#1d2530;color:var(--dim);height:44px;font-size:14px;margin-top:10px}
 small#authhint{display:none;color:var(--warn);font-size:12px;margin:-4px 0 12px}
+.subhint{display:block;color:var(--dim);font-size:12px;margin:-4px 0 12px;line-height:1.45}
 #authbox .code{font:600 22px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:2px;color:var(--warn);margin:6px 0}
 #authbox a{color:var(--warn)}
 details{border-top:1px solid var(--line);margin-top:12px;padding-top:10px}
@@ -354,6 +401,7 @@ const PAGE = `<!doctype html>
         <input id="port" name="port" type="number" inputmode="numeric" min="1" max="65535">
       </label>
     </div>
+    <small id="hosthint" class="subhint"></small>
     <label>玩家名
       <input id="user" name="user" type="text" autocapitalize="off" autocorrect="off" spellcheck="false">
     </label>
@@ -481,15 +529,23 @@ const PAGE = `<!doctype html>
         '。token 已缓存，再连不会重新要设备码；失效时会自动刷新。' +
         (d.authError ? ' 上次错误：' + d.authError : '')
     } else if (state === 'failed') {
-      msg.textContent = '登录失败：' + (d.authError || '看下方步骤里的错误')
+      msg.textContent = '登录失败：' + (d.authError || '看下方步骤里的错误') +
+        '。如果是超时或网络错误，先确认手机能上网。'
     } else {
       msg.textContent = '未登录。勾选“使用微软登录”、玩家名填账号邮箱后点连接，会给出设备码。'
     }
   }
 
+  function hostHint (d) {
+    var el = $('hosthint')
+    var ips = (d.localIps || []).join(', ')
+    el.textContent = '服务器地址要填运行 Minecraft 服务端的电脑的局域网 IP（如 192.168.1.23），' +
+      '127.0.0.1 是手机自己。' + (ips ? '手机当前地址：' + ips : '')
+  }
+
   var seen = ''
   function render (d) {
-    verdict(d); steps(d); chips(d); auth(d)
+    verdict(d); steps(d); chips(d); auth(d); hostHint(d)
     var sig = JSON.stringify([d.steps.length, d.connect, d.auth, d.updatedAt])
     if (sig !== seen) { seen = sig; $('raw').textContent = JSON.stringify(d, null, 2) }
   }

@@ -27,8 +27,8 @@ android {
         applicationId = "dev.mcbot.console.probe"
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.1.0-m3-probe5"
+        versionCode = 6
+        versionName = "0.1.0-m3-probe6"
         // arm64 only: libnode.so is ~62 MB per ABI and the target device is
         // arm64. Add "x86_64" here if you also want to run it in an emulator.
         ndk {

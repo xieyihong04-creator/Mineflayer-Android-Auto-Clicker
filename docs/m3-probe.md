@@ -32,6 +32,8 @@
 - **运行环境**：node / 平台 / v8 / uv。
 - 勾了微软登录会多出一块设备码卡片（链接 + 代码）。
 
+升级安装会自动换掉页面：App 用 `assets/node.zip` 的 SHA-256 决定要不要重新解压（早期版本只写了个固定的 `.bundle-ok`，于是装了新 APK 仍在跑旧的 `files/node/probe.js`，界面看起来"没变"）。WebView 同时设为 `LOAD_NO_CACHE`，并在 targetSdk 35 的 edge-to-edge 下给系统栏留出内边距。
+
 必须记住：**`127.0.0.1` 是手机自己**。要连 PC 上的服务端就填局域网 IP（`ipconfig` / `ip addr`），手机和 PC 在同一 Wi-Fi。
 
 也可以先用 adb 预填（页面里还能改）：

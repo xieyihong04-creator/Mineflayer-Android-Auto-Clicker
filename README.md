@@ -125,7 +125,7 @@ APK 本身不入库（`.gitignore` 排除 `*.apk` 与 `android/**/build/`）；`
 
 `android/probe/` 是一个**独立于外壳**的最小工程：把 `libnode.so` 拷进 jniLibs，用一段 JNI 壳调 `node::Start`，加载 `probe.js` 去 `require('mineflayer')` 并连一次服务器。结果只走 `http://127.0.0.1:3999/`（nodejs-mobile 不把 stdout 接到 logcat）。
 
-**真机已经证明一半：libnode.so 在 arm64 Android 上能加载、执行 JS、开 127.0.0.1 端口、写文件**（探针页返回 `node 18.20.4 / platform android / arch arm64`）。依赖树 98 个包零原生模块；mineflayer 4.39.0 虽然声明 `engines >=22`，实测在 18.20.4 上能 spawn（1 秒内）。但 nodejs-mobile v18.20.4 是 NDK r24 构建、**4 KB 页对齐**、Node 18 已 EOL，且一个进程只能起一次 Node 不能重启。
+**真机已证明两层：libnode.so 在 arm64 Android 上能加载、执行 JS、开 127.0.0.1 端口、写文件；mineflayer 4.39.0 能在 nodejs-mobile 里 191 ms 内 require 成功并发出 TCP 连接**（探针页返回 `node 18.20.4 / platform android / arch arm64`）。依赖树 98 个包零原生模块；mineflayer 虽声明 `engines >=22`，实测在 18.20.4 上能 spawn（1 秒内）。但 nodejs-mobile v18.20.4 是 NDK r24 构建、**4 KB 页对齐**、Node 18 已 EOL，且一个进程只能起一次 Node 不能重启。
 
 首次真机运行的失败点在**自己的打包裁剪**，不在 nodejs-mobile：`minecraft-data` 按版本名删目录会连带删掉别的版本要用的数据（`dataPaths.json` 里有交叉引用），`bedrock/common` 也在加载期被无条件 require。已改为 `prepare-bundle.js`：按 `dataPaths` 引用裁剪，并在构建期把懒加载字段、serializer、`require('mineflayer')` 全走一遍。**门剩下的一条是"Android 上 mineflayer 能连上"**，判据只有 `connect.ok=true, detail="spawned"`；在此之前 `android/app` 里不会出现 libnode 相关代码。CI 有独立 `probe` job，产物 `mcbot-m3-probe`。用法、体积数据（bundle 61 MB → node.zip 8.6 MB → APK 73.5 MB）与两个硬风险（16 KB 页、Node 18 EOL）见 [`docs/m3-probe.md`](docs/m3-probe.md)。
 

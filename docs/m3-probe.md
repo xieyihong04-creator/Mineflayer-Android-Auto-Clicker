@@ -17,10 +17,10 @@
 | mineflayer 实测（Node 18.20.4） | **能连上并 spawn**，1.20.1 正版服务端，905 ms | 本机 `probe3.js` |
 | 依赖树原生模块 | **0 个**（无 `*.node`、无 `binding.gyp`、无 `gypfile`） | 遍历 98 个包 |
 | `minecraft-data` 体积 | **895 MB**（PC 499 + Bedrock 395） | `du -sh` |
-| 裁剪后（目标版本 + 最新版本 + 各自 dataPaths 引用 + common） | **23 MB** | 同上 |
-| 完整 node 包（含 node_modules） | **61 MB / 5669 个文件** | `bundle-node.sh` |
-| 打进 APK 的 `node.zip` | **8.6 MB**（APK 内压缩后 7.5 MB） | Gradle `nodeAsset` |
-| 探针 APK（arm64 单 ABI） | **73.5 MB**（其中 libnode.so 62.4 MB） | `:probe:assembleDebug` |
+| 保留（全部 `pc/*` + 两个 `common`，其余 bedrock 删除） | **130 MB** | 同上 |
+| 完整 node 包（含 node_modules） | **130 MB / 7042 个文件** | `bundle-node.sh` |
+| 打进 APK 的 `node.zip` | **15.4 MB**（数据是 JSON，压缩率约 8:1） | Gradle `nodeAsset` |
+| 探针 APK（arm64 单 ABI） | **79.9 MB**（其中 libnode.so 62.4 MB） | `:probe:assembleDebug` |
 
 ## 二、探针怎么用
 
@@ -118,8 +118,9 @@ adb shell am start -n dev.mcbot.console.probe/.MainActivity \
 1. **`bedrock/common` 不能删。** `minecraft-data/lib/supportsFeature.js` 与 `index.js` 在加载时就 `require('../minecraft-data/data/bedrock/common/*.json')`，哪怕只连 PC 服务端。第一次真机报的就是 `Cannot find module .../bedrock/common/features.json`。
 2. **不能按版本名字删目录。** `data.js` 是懒加载，但一个版本的数据并不在自己的目录里：`dataPaths.json` 里 `1.20.1` 的 `blocks` 指向 `pc/1.20`、`attributes` 指向 `pc/1.17`、`windows` 指向 `pc/1.16.1`。删目录必须按 `dataPaths` 的引用集合来，否则被保留的版本也会在 `createBot` 时炸（第二次是 `.../pc/26.1/blocks.json`）。
 3. **最新版本目录也要留。** `server.version: false` 是默认值（`src/config.js:10`），mineflayer 先用"最新的已知版本"发握手包再协商，所以 `dataPaths` 里最后一个版本（当前 `26.1`）必须存在。
+4. **只留"目标 + 最新"仍然不够。** 第三次真机运行（2026-11-15 21:46）里，服务器协商出来的是 **1.13**，`createBot` 立刻炸在 `.../pc/1.13/blocks.json`。版本是服务器在 ping 响应里决定的，客户端无法预知。现在 `pc/*` 全量保留（104 MB 原始 JSON，压完只多约 8 MB），并且构建期对 **66 个版本** 逐个编译 play 态 serializer（跳过 `1.10-pre1` 这类上游数据本身不一致的预发布别名），任何一个版本取不到数据都会让构建失败。
 
-现在的校验会：把目标版本与最新版本的每个懒加载字段全部读一遍（缺文件即抛）、各编译一次 protodef serializer、并 `require('mineflayer')` 成功。等价于把 `createBot` 的初始化路径在构建机上先走一遍。
+现在的校验会：把目标版本与最新版本的每个懒加载字段全部读一遍（缺文件即抛）、对全部版本编译 protodef serializer、并 `require('mineflayer')` 成功。等价于把 `createBot` 的初始化路径在构建机上先走一遍。
 
 本地已用 APK 里那份 `assets/node.zip` 解包、在同一 Node 18.20.4 上对 1.20.1 服务端复跑：`require mineflayer ok`、`{"ok":true,"detail":"spawned"}`。真机结论等下一次安装。
 
@@ -135,3 +136,9 @@ adb shell am start -n dev.mcbot.console.probe/.MainActivity \
 ```
 
 `ECONNREFUSED` 与"超时"不同：前者说明包到了对端并被拒绝（地址通、端口没人听），后者才是路由/防火墙问题。所以下一步只需要换 host，不需要改任何代码。
+
+### 第三次真机运行（2026-11-15 21:46，v7）
+
+用域名 `mcfallout.net` 连接：`srv _minecraft._tcp.mcfallout.net → jp.mcfallout.net:25565 · cloudflare`（93 ms，走的是 DoH 而不是 c-ares）、`a jp.mcfallout.net → 172.65.211.204`（20 ms），随后 `connect 172.65.211.204:25565` 真正建立到 TCPShield 入口。**域名解析这一环在真机上已经通了**，之前拨到 Cloudflare 网页地址的问题没有再出现。
+
+这次失败换了地方：服务器协商出 **1.13**，`createBot` 在构造 serializer 时找不到 `pc/1.13/blocks.json`——就是上面第 4 条裁剪 bug。与网络、nodejs-mobile、登录都无关。v8 全量保留 `pc/*` 并在构建期逐个版本验证，真机结果待下一次安装。

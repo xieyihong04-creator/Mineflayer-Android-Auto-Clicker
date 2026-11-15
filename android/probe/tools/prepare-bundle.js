@@ -12,9 +12,14 @@
  *   2. data.js is lazy, but a version's files do not live in its own directory:
  *      dataPaths.json points e.g. 1.20.1 -> pc/1.20 for blocks and pc/1.17 for
  *      attributes. Deleting by version name deletes data another version needs.
- *   3. mineflayer's default `version: false` opens the handshake with the
- *      NEWEST known version before the server tells it anything, so the newest
- *      data directory has to survive too.
+ *   3. mineflayer's default `version: false` pings the server first, and the
+ *      server chooses the version. The third device run negotiated 1.13 and
+ *      died on ".../pc/1.13/blocks.json" -- a keep-set of {target, newest} is
+ *      not enough, because any server version can be negotiated.
+ *
+ * So: keep every pc/* directory (104 MB raw, ~8 MB zipped) and verify that a
+ * protocol serializer can be built for EVERY pc version, not just the two we
+ * expect to use.
  *
  * Usage: node prepare-bundle.js <bundle dir> <minecraft version>
  */
@@ -31,24 +36,18 @@ const dataPaths = JSON.parse(fs.readFileSync(path.join(dataRoot, 'dataPaths.json
 const pcVersions = Object.keys(dataPaths.pc)
 const newest = pcVersions[pcVersions.length - 1]
 
-function dirsFor (version) {
-  const entry = dataPaths.pc[version]
-  if (!entry) throw new Error(`minecraft-data has no pc dataPaths for ${version}`)
-  return Object.values(entry)
-}
-
-// Everything the two reachable versions point at, plus the always-required commons.
+// Keep every pc version: the negotiated version is decided by the server at
+// connect time (mineflayer pings first), so there is no "two versions are
+// enough" assumption to make. bedrock is only needed for the commons that
+// minecraft-data requires unconditionally at load time.
 const keep = new Set(['pc/common', 'bedrock/common'])
-for (const version of [MC_VERSION, newest]) {
-  for (const dir of dirsFor(version)) keep.add(dir)
-}
 
 for (const family of ['pc', 'bedrock']) {
   const base = path.join(dataRoot, family)
   if (!fs.existsSync(base)) continue
   for (const name of fs.readdirSync(base)) {
     const rel = `${family}/${name}`
-    if (rel === `${family}/common`) continue
+    if (family === 'pc' || rel === 'bedrock/common') { keep.add(rel); continue }
     if (!keep.has(rel)) fs.rmSync(path.join(base, name), { recursive: true, force: true })
   }
 }
@@ -77,10 +76,27 @@ function touchEveryLazyGetter (version) {
 
 for (const version of [MC_VERSION, newest]) {
   const data = touchEveryLazyGetter(version)
-  // Building a serializer is what createBot does first; it compiles protodef.
-  createSerializer({ version, state: 'play' })
   console.log(`ok  ${version} (blocks=${data.blocksArray.length}, protocol=${data.version.version})`)
 }
 
+// The device run negotiated 1.13 on its own. Any pc version can come back from
+// the server, so prove every one of them can build a play-state serializer.
+// Pre-release aliases (1.10-pre1, ...) are skipped: no server reports them, and
+// minecraft-data upstream ships one of them with mismatched protocol data.
+const allPc = Object.keys(dataPaths.pc)
+const checked = allPc.filter((v) => !/-(pre|rc)\d*$/i.test(v))
+const failed = []
+for (const version of checked) {
+  try {
+    createSerializer({ version, state: 'play' })
+  } catch (e) {
+    failed.push(version + ': ' + String(e.message).split('\n')[0])
+  }
+}
+if (failed.length) {
+  throw new Error(`serializer build failed for ${failed.length}/${checked.length} pc versions:\n  ` + failed.join('\n  '))
+}
+console.log(`ok  serializer builds for ${checked.length}/${allPc.length} pc versions (pre-release aliases skipped)`)
+
 console.log(`ok  mineflayer ${require(path.join(OUT, 'node_modules/mineflayer/package.json')).version} loads`)
-console.log(`pruned to: ${[...keep].sort().join(' ')}`)
+console.log(`kept: ${[...keep].sort().join(' ')}`)

@@ -580,6 +580,9 @@ const PAGE = `<!doctype html>
   var $ = function (id) { return document.getElementById(id) }
   var form = $('form'), go = $('go')
 
+  // A require stack can be kilobytes long; the full text stays in 原始 JSON.
+  function shorten (s, n) { s = String(s); return s.length > n ? s.slice(0, n) + '…' : s }
+
   // Defaults come from the server (intent args), the last values typed win.
   var last = {}
   try { last = JSON.parse(localStorage.getItem('m3probe') || '{}') } catch (e) {}
@@ -609,7 +612,7 @@ const PAGE = `<!doctype html>
     else if (detail.indexOf('timeout') >= 0) tip = '超时：检查手机与服务端是否同一网络，或服务端防火墙。'
     else if (detail.indexOf('kicked') >= 0) tip = '被踢出：正版服请勾选“微软登录”再试。'
     else if (detail.indexOf('ENOTFOUND') >= 0 || detail.indexOf('EAI_AGAIN') >= 0) tip = '域名解析失败：改用 IP 试试。'
-    hint.textContent = detail + (tip ? ' — ' + tip : '')
+    hint.textContent = shorten(detail, 320) + (tip ? ' — ' + tip : '')
   }
 
   function steps (d) {
@@ -631,7 +634,7 @@ const PAGE = `<!doctype html>
       name.textContent = s.name
       if (s.detail !== undefined) {
         var small = document.createElement('small')
-        small.textContent = typeof s.detail === 'string' ? s.detail : JSON.stringify(s.detail)
+        small.textContent = typeof s.detail === 'string' ? shorten(s.detail, 240) : JSON.stringify(s.detail)
         name.appendChild(small)
       }
       var ms = document.createElement('span')

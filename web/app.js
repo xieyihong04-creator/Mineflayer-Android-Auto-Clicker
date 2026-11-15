@@ -300,7 +300,7 @@ function applyMode (mode) {
 function renderSignals () {
   const s = state.signals || {}
   els.pBattery.textContent = s.battery == null ? '--' : `${s.battery}%`
-  els.pCharging.textContent = s.charging ? '是' : '否'
+  els.pCharging.textContent = s.charging == null ? '未知' : (s.charging ? '是' : '否')
   els.pThermal.textContent = s.thermal == null ? '--' : `T${s.thermal}`
   const screenMap = { ui: 'UI 上报', no_client: '无观察者', unknown: '未知→按灭', fallback: '模拟' }
   els.pScreen.textContent = `${s.screenOn ? '亮' : '灭'}（${screenMap[s.screenSource] || s.screenSource || '--'}）`
@@ -308,7 +308,7 @@ function renderSignals () {
   els.powerSrc.textContent = s.source === 'mock' ? '模拟信号' : 'Android 信号'
 }
 
-const SIGNAL_LABELS = { battery: '电量', thermal: '温度', screen: '屏幕', powerSave: '省电模式' }
+const SIGNAL_LABELS = { battery: '电量', charging: '充电', thermal: '温度', screen: '屏幕', powerSave: '省电模式' }
 
 /**
  * Startup self-check table from `hello` / `{t:'signals'}`. Every external
@@ -327,6 +327,9 @@ function applySignals (table) {
   const hints = []
   if ((table.battery || {}).status === 'unavailable') {
     hints.push('电量需安装 Termux:API（pkg install termux-api）且允许 Termux:API 读取电池')
+  }
+  if ((table.charging || {}).status === 'unavailable') {
+    hints.push('充电状态读不到：低电量仍会断开，不会跳过 L3')
   }
   if ((table.thermal || {}).status === 'unavailable') {
     hints.push('温度区 sysfs 不可读，L0 温度降档不会触发')

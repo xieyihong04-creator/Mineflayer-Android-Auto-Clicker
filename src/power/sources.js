@@ -14,8 +14,12 @@ function execFileAsync (cmd, args, timeout = 3000) {
 const BATTERY_DIRS = [
   '/sys/class/power_supply/battery',
   '/sys/class/power_supply/Battery',
-  '/sys/class/power_supply/bms'
+  '/sys/class/power_supply/BATTERY',
+  '/sys/class/power_supply/bms',
+  '/sys/class/power_supply/primary',
+  '/sys/class/power_supply/main'
 ]
+const POWER_SUPPLY_ROOT = '/sys/class/power_supply'
 const THERMAL_ROOT = '/sys/class/thermal'
 
 /** Approximate Android PowerManager thermal status from the hottest zone. */
@@ -63,23 +67,59 @@ class AndroidSignalSource {
    * Battery: sysfs first (world-readable on most ROMs), then `termux-battery-status`
    * (needs the Termux:API app + package). Returns `{battery: null}` when neither
    * works - never a fake 100%.
+   *
+   * `capacity` and `status` are two independent files: a ROM can expose one and
+   * deny the other, so charging is probed across every candidate directory and
+   * becomes `null` (unknown) instead of silently "not charging".
    */
   async readBattery () {
-    for (const dir of this.batteryDirs) {
+    const dirs = await this.candidateDirs()
+    let battery = null
+    let via = null
+    let charging = null
+    for (const dir of dirs) {
+      if (battery !== null) break
       try {
         const capacity = Number((await this.fs.readFile(`${dir}/capacity`, 'utf8')).trim())
         if (!Number.isFinite(capacity)) continue
-        let charging = false
-        try {
-          const status = (await this.fs.readFile(`${dir}/status`, 'utf8')).trim().toLowerCase()
-          charging = status === 'charging' || status === 'full'
-        } catch {}
-        return { battery: capacity, charging, via: 'sysfs' }
+        battery = capacity
+        via = 'sysfs'
       } catch {}
     }
+    for (const dir of dirs) {
+      try {
+        const status = (await this.fs.readFile(`${dir}/status`, 'utf8')).trim().toLowerCase()
+        if (!status) continue
+        charging = status === 'charging' || status === 'full'
+        break
+      } catch {}
+    }
+    if (battery !== null) return { battery, charging, via }
     const viaApi = await this.readBatteryViaApi()
     if (viaApi) return viaApi
-    return { battery: null, charging: false, via: null }
+    return { battery: null, charging: null, via: null }
+  }
+
+  /**
+   * Directory names for the battery node differ per ROM (`battery`/`BATTERY`/
+   * `bms`/...). Ask sysfs for every supply whose `type` is Battery and put those
+   * first, then fall back to the hardcoded guesses.
+   */
+  async candidateDirs () {
+    const dirs = [...this.batteryDirs]
+    let names = []
+    try {
+      names = await this.fs.readdir(POWER_SUPPLY_ROOT)
+    } catch {}
+    for (const name of names) {
+      const dir = `${POWER_SUPPLY_ROOT}/${name}`
+      if (dirs.includes(dir)) continue
+      try {
+        const type = (await this.fs.readFile(`${dir}/type`, 'utf8')).trim().toLowerCase()
+        if (type === 'battery') dirs.unshift(dir)
+      } catch {}
+    }
+    return dirs
   }
 
   async readBatteryViaApi () {
@@ -90,7 +130,9 @@ class AndroidSignalSource {
       const capacity = Number(data.percentage)
       if (!Number.isFinite(capacity)) return null
       const plugged = String(data.plugged || '').toUpperCase()
-      return { battery: capacity, charging: plugged.includes('PLUGGED'), via: 'termux-api' }
+      // No `plugged` field at all: charging is unknown, not "no".
+      const charging = plugged ? plugged.includes('PLUGGED') : null
+      return { battery: capacity, charging, via: 'termux-api' }
     } catch {
       return null
     }
@@ -142,7 +184,7 @@ class AndroidSignalSource {
       const thermalKnown = Number.isFinite(mock.thermal) || Number.isFinite(mock.thermalCelsius)
       return {
         battery: batteryKnown ? mock.battery : null,
-        charging: Boolean(mock.charging),
+        charging: mock.charging === undefined ? null : Boolean(mock.charging),
         thermal: thermalKnown
           ? (Number.isFinite(mock.thermal) ? mock.thermal : thermalStatusFromCelsius(mock.thermalCelsius))
           : null,
@@ -152,6 +194,7 @@ class AndroidSignalSource {
         source: 'mock',
         availability: {
           battery: batteryKnown ? 'mock' : 'unavailable',
+          charging: mock.charging === undefined ? 'unavailable' : 'mock',
           thermal: thermalKnown ? 'mock' : 'unavailable',
           powerSave: 'mock'
         }
@@ -176,6 +219,9 @@ class AndroidSignalSource {
       // be silently treated as a healthy value.
       availability: {
         battery: battery.battery === null ? 'unavailable' : (battery.via === 'termux-api' ? 'live(termux-api)' : 'live'),
+        // capacity and status are separate files: one can be readable while the
+        // other is denied, and L3 exit depends on this one.
+        charging: battery.charging === null ? 'unavailable' : 'live',
         thermal: thermal.status === null ? 'unavailable' : 'live',
         powerSave: 'live'
       }

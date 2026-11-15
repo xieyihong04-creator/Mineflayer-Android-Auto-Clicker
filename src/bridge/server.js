@@ -85,7 +85,10 @@ class BridgeServer {
         status: this.manager.status,
         mode: this.manager.tier.mode,
         clients: this.clients.size,
-        protoVersion: PROTO_VERSION
+        protoVersion: PROTO_VERSION,
+        // Same self-check table as hello.signals, so a real-device check is
+        // `curl -s localhost:8765/api/health` instead of a screenshot.
+        signals: this.manager.signalTable()
       })
       res.writeHead(200, { 'content-type': MIME['.json'] })
       res.end(body)

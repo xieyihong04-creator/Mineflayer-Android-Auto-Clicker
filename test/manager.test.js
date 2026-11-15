@@ -364,13 +364,14 @@ test('signal self-check: every unavailable sensor is a third state in hello', ()
   const { manager } = makeManager()
   manager.updatePower({
     battery: null,
-    charging: false,
+    charging: null,
     thermal: null,
     powerSave: false,
-    availability: { battery: 'unavailable', thermal: 'unavailable', powerSave: 'live' }
+    availability: { battery: 'unavailable', charging: 'unavailable', thermal: 'unavailable', powerSave: 'live' }
   })
   const table = manager.signalTable()
   assert.equal(table.battery.status, 'unavailable')
+  assert.equal(table.charging.status, 'unavailable', 'charging is its own line, not folded into battery')
   assert.equal(table.thermal.status, 'unavailable')
   assert.equal(table.powerSave.status, 'live')
   assert.equal(table.screen.status, 'no_client')
@@ -389,7 +390,7 @@ test('signal self-check: termux-api fallback is reported, not hidden', () => {
     charging: true,
     thermal: 1,
     powerSave: false,
-    availability: { battery: 'live(termux-api)', thermal: 'live', powerSave: 'live' }
+    availability: { battery: 'live(termux-api)', charging: 'live', thermal: 'live', powerSave: 'live' }
   })
   assert.equal(manager.signalTable().battery.status, 'live(termux-api)')
 })
@@ -403,12 +404,12 @@ test('signal self-check: table is pushed once per change, not per poll', () => {
     charging: false,
     thermal: 0,
     powerSave: false,
-    availability: { battery: 'live', thermal: 'live', powerSave: 'live' }
+    availability: { battery: 'live', charging: 'live', thermal: 'live', powerSave: 'live' }
   }
   manager.updatePower(signals)
   manager.updatePower(signals)
   assert.equal(pushes.length, 1)
-  manager.updatePower({ ...signals, availability: { battery: 'unavailable', thermal: 'live', powerSave: 'live' } })
+  manager.updatePower({ ...signals, availability: { battery: 'unavailable', charging: 'live', thermal: 'live', powerSave: 'live' } })
   assert.equal(pushes.length, 2)
   assert.equal(pushes[1].signals.battery.status, 'unavailable')
 })

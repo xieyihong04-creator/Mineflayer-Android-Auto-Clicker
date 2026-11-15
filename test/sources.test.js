@@ -27,7 +27,7 @@ test('mock signals are used when MCBOT_MOCK_POWER is set (desktop / tests)', asy
     screenHint: false,
     powerSave: true,
     source: 'mock',
-    availability: { battery: 'mock', thermal: 'mock', powerSave: 'mock' }
+    availability: { battery: 'mock', charging: 'mock', thermal: 'mock', powerSave: 'mock' }
   })
 })
 
@@ -72,6 +72,7 @@ test('a broken sysfs does not throw; every signal degrades to its third state', 
   assert.equal(signals.powerSave, false)
   assert.equal(signals.thermal, null, 'unreadable thermal is null, not NONE=0')
   assert.equal(signals.availability.battery, 'unavailable')
+  assert.equal(signals.availability.charging, 'unavailable', 'status is a separate file from capacity')
   assert.equal(signals.availability.thermal, 'unavailable')
 })
 
@@ -106,7 +107,7 @@ test('termux-battery-status absent (Termux:API not installed) stays unavailable'
   const source = new AndroidSignalSource({ fs: fakeFs, exec, env: {} })
   const signals = await source.read()
   assert.equal(signals.battery, null)
-  assert.equal(signals.charging, false)
+  assert.equal(signals.charging, null)
   assert.equal(signals.availability.battery, 'unavailable')
 })
 
@@ -132,4 +133,56 @@ test('dumpsys screen probing degrades to null instead of guessing "on"', async (
   assert.equal(await asleep.readScreenOn(), false)
   const awake = new AndroidSignalSource({ exec: async () => 'mWakefulness=Awake\n', env: {} })
   assert.equal(await awake.readScreenOn(), true)
+})
+
+test('charging is its own third state: capacity readable, status denied', async () => {
+  const files = {
+    '/sys/class/power_supply/battery/capacity': '9\n'
+  }
+  const fakeFs = {
+    readFile: async (p) => {
+      if (files[p] === undefined) throw new Error('EACCES')
+      return files[p]
+    },
+    readdir: async () => []
+  }
+  const source = new AndroidSignalSource({ fs: fakeFs, exec: async () => '0\n', env: {} })
+  const signals = await source.read()
+  assert.equal(signals.battery, 9)
+  assert.equal(signals.charging, null, 'unknown charging is not "not charging"')
+  assert.equal(signals.availability.battery, 'live')
+  assert.equal(signals.availability.charging, 'unavailable')
+})
+
+test('battery node name is discovered from power_supply/type, not hardcoded', async () => {
+  const fakeFs = {
+    readFile: async (p) => {
+      if (p === '/sys/class/power_supply/BAT0/type') return 'Battery\n'
+      if (p === '/sys/class/power_supply/BAT0/capacity') return '55\n'
+      if (p === '/sys/class/power_supply/BAT0/status') return 'Discharging\n'
+      throw new Error('ENOENT')
+    },
+    readdir: async (root) => (root === '/sys/class/power_supply' ? ['BAT0', 'usb'] : [])
+  }
+  const source = new AndroidSignalSource({ fs: fakeFs, exec: async () => null, env: {} })
+  const signals = await source.read()
+  assert.equal(signals.battery, 55)
+  assert.equal(signals.charging, false)
+  assert.equal(signals.availability.charging, 'live')
+})
+
+test('termux-battery-status without a plugged field leaves charging unknown', async () => {
+  const fakeFs = {
+    readFile: async () => { throw new Error('ENOENT') },
+    readdir: async () => []
+  }
+  const exec = async (cmd) => {
+    if (cmd === 'termux-battery-status') return JSON.stringify({ percentage: 64 })
+    return null
+  }
+  const source = new AndroidSignalSource({ fs: fakeFs, exec, env: {} })
+  const signals = await source.read()
+  assert.equal(signals.battery, 64)
+  assert.equal(signals.charging, null)
+  assert.equal(signals.availability.charging, 'unavailable')
 })

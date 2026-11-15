@@ -35,6 +35,10 @@ class InventoryManager {
     this.attached = new WeakSet()
     this.lastRunAt = 0
     this.lastReason = null
+    // The cleanup timer retries every intervalMs; a permanently full container
+    // or a broken drop point must not toast the user every 5 minutes.
+    this.abortNotifyMs = 600000
+    this.lastAbort = null
   }
 
   start () {
@@ -116,7 +120,7 @@ class InventoryManager {
         if (!check.ok) {
           const why = `${check.reason}`
           this.logger && this.logger.warn(`cleanup aborted: drop point unusable (${why})`)
-          this.notify('warn', `丢弃点不可用（${why}），已跳过本次清包`)
+          this.warnAbort(`drop_point_${why}`, `丢弃点不可用（${why}），已跳过本次清包`)
           return { ok: false, reason: `drop_point_${why}` }
         }
         if (check.standing) {
@@ -138,7 +142,7 @@ class InventoryManager {
         if (!live.safe) {
           const why = live.reason
           this.logger && this.logger.warn(`cleanup aborted on arrival: standing spot unsafe (${why})`)
-          this.notify('warn', `丢弃点已不安全（${why}），已中止清包并返回`)
+          this.warnAbort(`standing_unsafe_${why}`, `丢弃点已不安全（${why}），已中止清包并返回`)
           await this.returnHome(origin)
           return { ok: false, reason: `standing_unsafe_${why}`, tossed }
         }
@@ -180,7 +184,7 @@ class InventoryManager {
       }
 
       if (container) {
-        try { container.close() } catch {}
+        await this.closeContainer(bot, container)
         container = null
       }
 
@@ -190,24 +194,59 @@ class InventoryManager {
       return { ok: true, tossed }
     } catch (err) {
       this.logger && this.logger.error(`cleanup failed: ${err.message}`)
-      this.notify('warn', `背包清理失败：${err.message}`)
-      // Best effort: go home even if the toss loop failed.
-      try {
-        if (container) container.close()
-      } catch {}
+      // Never fail silently: a stopped cleanup means the farm is silently full.
+      const key = /受到伤害/.test(err.message) ? 'damage' : err.message
+      this.warnAbort(key, `背包清理失败：${err.message}${tossed ? `（已丢 ${tossed} 组）` : ''}`)
+      // Close before moving: the window must not stay open while we walk away.
+      await this.closeContainer(bot, container)
+      container = null
       await this.returnHome(origin)
       return { ok: false, reason: err.message, tossed }
     } finally {
+      // Every path closes the window, including aborts: a leaked window id makes
+      // the server keep syncing slots into a window we no longer track, and the
+      // next window click lands in the wrong place.
+      await this.closeContainer(bot, container)
       this.busy = false
       this.lastRunAt = this.now()
       this.emit({ t: 'inv', items: snapshotInventory(bot), empty: this.emptySlots(bot) })
     }
   }
 
+  /** Same abort reason twice in 10 minutes => one toast, not one per retry. */
+  warnAbort (key, message) {
+    const now = this.now()
+    if (this.lastAbort && this.lastAbort.key === key && now - this.lastAbort.at < this.abortNotifyMs) return
+    this.lastAbort = { key, at: now }
+    this.notify('warn', message)
+  }
+
   async returnHome (origin) {
     try {
       await this.nav.goto(origin.x, origin.y, origin.z, 1, { reason: 'cleanup-return' })
     } catch {}
+  }
+
+  /**
+   * Close the container window and say what happened to the cursor stack.
+   * Vanilla returns the carried item to the player inventory on close (drops it
+   * if there is no room); this makes that explicit instead of leaving a window
+   * open with an unaccounted stack on the cursor.
+   */
+  async closeContainer (bot, container) {
+    if (!container) return
+    const carried = container.selectedItem
+    try {
+      if (typeof container.close === 'function') await container.close()
+      else if (bot && typeof bot.closeWindow === 'function') await bot.closeWindow(container)
+      this.logger && this.logger.info('container window closed')
+    } catch (err) {
+      this.logger && this.logger.warn(`closing container failed: ${err.message}`)
+    }
+    if (carried && carried.count > 0) {
+      this.logger && this.logger.warn(`container closed with ${carried.count}x ${carried.name} on the cursor`)
+      this.notify('warn', `关闭容器时手上还有 ${carried.count} 个 ${carried.name}，已按服务器规则退回背包`)
+    }
   }
 
   /** A full hopper/chest would silently drop nothing; stop instead. */
@@ -225,7 +264,7 @@ class InventoryManager {
     if (!block) throw new Error('drop container block not loaded')
     const container = await bot.openContainer(block)
     if (this.containerFull(container)) {
-      try { container.close() } catch {}
+      await this.closeContainer(bot, container)
       throw new Error('目标容器已满，已停止清包')
     }
     return container

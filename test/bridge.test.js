@@ -216,6 +216,10 @@ test('bridge: hello carries protoVersion and health reports it', async (t) => {
   const health = JSON.parse((await httpGet(server.port, '/api/health')).body)
   assert.equal(health.protoVersion, 1)
   assert.equal(health.clients, 1)
+  // The self-check table is reachable without a browser, which is what the
+  // real-device step 4 needs (`curl -s localhost:8765/api/health`).
+  assert.equal(health.signals.charging.status !== undefined, true)
+  assert.equal(health.signals.battery.status, 'unavailable')
 })
 
 test('bridge: screen visibility reports are accepted and drive the tier', async (t) => {
@@ -258,7 +262,7 @@ test('bridge: hello carries a per-client id and the startup signal table', async
   // The socket is registered before hello, so the page is a client that has
   // not reported visibility yet -> unknown, never "assume on".
   assert.equal(hello.signals.screen.status, 'unknown')
-  for (const key of ['battery', 'thermal', 'powerSave']) {
+  for (const key of ['battery', 'charging', 'thermal', 'powerSave']) {
     assert.ok(['unavailable', 'live', 'mock', 'live(termux-api)'].includes(hello.signals[key].status))
   }
 })

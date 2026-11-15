@@ -503,6 +503,9 @@ class BotManager extends EventEmitter {
       : (screen.source === 'ui' ? 'live' : 'unknown')
     return {
       battery: { source: mock ? 'mock' : 'sysfs|termux-api', status: avail.battery || 'unavailable' },
+      // `capacity` and `status` are independent sysfs files, and both the L3
+      // skip and the L3 exit depend on this one: report it separately.
+      charging: { source: mock ? 'mock' : 'sysfs|termux-api', status: avail.charging || 'unavailable' },
       thermal: { source: mock ? 'mock' : 'sysfs', status: avail.thermal || 'unavailable' },
       screen: { source: 'ui-events', status: screenStatus },
       powerSave: { source: mock ? 'mock' : 'settings', status: avail.powerSave || 'unavailable' }

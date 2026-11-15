@@ -5,7 +5,7 @@ const assert = require('node:assert/strict')
 const { AutoEater } = require('../src/bot/eating')
 const { FakeBot, makeConfig, fakeLogger } = require('./helpers')
 
-function makeEater ({ bot = new FakeBot(), configPatch = {}, nav = null } = {}) {
+function makeEater ({ bot = new FakeBot(), configPatch = {}, nav = null, onStarving = null } = {}) {
   const notifications = []
   const config = makeConfig(configPatch)
   const eater = new AutoEater({
@@ -14,7 +14,8 @@ function makeEater ({ bot = new FakeBot(), configPatch = {}, nav = null } = {}) 
     logger: fakeLogger(),
     nav,
     notify: (level, msg) => notifications.push({ level, msg }),
-    now: () => Date.now()
+    now: () => Date.now(),
+    onStarving
   })
   return { eater, bot, notifications, config }
 }
@@ -96,4 +97,43 @@ test('F5: disabled by config unless forced', async () => {
   bot.addItem('bread', 1)
   assert.equal((await eater.check('health')).reason, 'disabled')
   assert.equal((await eater.check('manual', { force: true })).ok, true)
+})
+
+test('F5: foodless + low HP reports starving once and asks the manager to halt', async () => {
+  const halts = []
+  const { eater, bot, notifications } = makeEater({ onStarving: (info) => halts.push(info) })
+  bot.food = 0
+  bot.health = 6
+  bot.addItem('rotten_flesh', 10)
+  const first = await eater.check('health')
+  assert.equal(first.reason, 'no_food')
+  assert.equal(halts.length, 1)
+  assert.equal(halts[0].health, 6)
+  assert.equal(halts[0].reason, 'food_exhausted')
+  assert.ok(notifications.some((n) => /生命仅 6/.test(n.msg)))
+  await eater.check('health')
+  assert.equal(halts.length, 1, 'one halt per starving episode, not per health event')
+})
+
+test('F5: foodless but healthy only alerts, never halts', async () => {
+  const halts = []
+  const { eater, bot } = makeEater({ onStarving: (info) => halts.push(info) })
+  bot.food = 0
+  bot.health = 18
+  bot.addItem('rotten_flesh', 10)
+  assert.equal((await eater.check('health')).reason, 'no_food')
+  assert.equal(halts.length, 0)
+})
+
+test('F5: disconnectAtHealth = 0 disables the starvation halt', async () => {
+  const halts = []
+  const { eater, bot } = makeEater({
+    configPatch: { eat: { disconnectAtHealth: 0 } },
+    onStarving: (info) => halts.push(info)
+  })
+  bot.food = 0
+  bot.health = 1
+  bot.addItem('rotten_flesh', 10)
+  await eater.check('health')
+  assert.equal(halts.length, 0)
 })

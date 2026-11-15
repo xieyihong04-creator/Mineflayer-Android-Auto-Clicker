@@ -17,7 +17,8 @@ const { ScreenStateTracker } = require('../power/screen')
 const {
   stateMessage,
   modeMessage,
-  notifyMessage
+  notifyMessage,
+  signalsMessage
 } = require('../bridge/protocol')
 
 const VIEW_DISTANCE = {
@@ -51,7 +52,8 @@ class BotManager extends EventEmitter {
     this.lastPos = null
     this.lastMoveAt = now()
     this.lastConnectOptions = null
-    this.lastSignals = { battery: null, charging: false, thermal: 0, powerSave: false }
+    this.lastSignals = { battery: null, charging: false, thermal: null, powerSave: false }
+    this.lastSignalTableJson = null
     this.uiClients = 0
     this.returnAfterReconnect = false
     this.backoff = new Backoff({
@@ -75,7 +77,10 @@ class BotManager extends EventEmitter {
       logger,
       nav: this.nav,
       notify: (level, msg) => this.notify(level, msg),
-      emit: (msg) => this.emit('message', msg)
+      emit: (msg) => this.emit('message', msg),
+      // Food exhaustion + low HP stops the bot. This is a SEPARATE halt source
+      // from F9: L3 exit / charging must not clear either of them.
+      onStarving: (info) => this.halt('food_exhausted', `食物耗尽且生命 ${info.health}，已停机待补食物`)
     })
     this.inventory = new InventoryManager({
       getBot: () => this.bot,
@@ -431,7 +436,9 @@ class BotManager extends EventEmitter {
   /** Called by the power loop every few seconds with raw sensor values. */
   updatePower (signals) {
     this.lastSignals = { ...signals }
-    return this.refreshPower()
+    const next = this.refreshPower()
+    this.emitSignalTable()
+    return next
   }
 
   /**
@@ -460,13 +467,54 @@ class BotManager extends EventEmitter {
     this.screen.setClients(this.uiClients)
     this.refreshPower()
     this.restartStateLoop(this.tier.mode)
+    this.emitSignalTable()
     this.emit('status', this.statusSnapshot())
   }
 
-  /** `{"t":"screen","on":false}` from the page Visibility API. */
-  reportScreen (on) {
-    this.screen.report(on)
-    return this.refreshPower()
+  /** `{"t":"screen","on":false}` from one client's Page Visibility API. */
+  reportScreen (on, clientId = 'default') {
+    this.screen.report(clientId, on)
+    const mode = this.refreshPower()
+    this.emitSignalTable()
+    return mode
+  }
+
+  /** Any upstream message keeps that observer's report fresh. */
+  touchScreen (clientId = 'default') {
+    if (this.screen.touch(clientId)) this.refreshPower()
+  }
+
+  dropScreenClient (clientId) {
+    this.screen.removeClient(clientId)
+    this.refreshPower()
+    this.emitSignalTable()
+  }
+
+  /**
+   * Startup / runtime self-check table. Every external signal has a third
+   * "unavailable" state; the UI must show it instead of pretending normal.
+   */
+  signalTable () {
+    const avail = this.lastSignals.availability || {}
+    const screen = this.screen.snapshot()
+    const mock = this.lastSignals.source === 'mock'
+    const screenStatus = screen.clients === 0
+      ? 'no_client'
+      : (screen.source === 'ui' ? 'live' : 'unknown')
+    return {
+      battery: { source: mock ? 'mock' : 'sysfs|termux-api', status: avail.battery || 'unavailable' },
+      thermal: { source: mock ? 'mock' : 'sysfs', status: avail.thermal || 'unavailable' },
+      screen: { source: 'ui-events', status: screenStatus },
+      powerSave: { source: mock ? 'mock' : 'settings', status: avail.powerSave || 'unavailable' }
+    }
+  }
+
+  emitSignalTable () {
+    const table = this.signalTable()
+    const serialized = JSON.stringify(table)
+    if (serialized === this.lastSignalTableJson) return
+    this.lastSignalTableJson = serialized
+    this.emit('message', signalsMessage(table))
   }
 
   isIdle () {
@@ -504,11 +552,17 @@ class BotManager extends EventEmitter {
     this.emit('message', modeMessage(this.tier.snapshot))
 
     if (mode === 'L3') {
+      // F9's breaker halt is manual-only: a power transition must never
+      // resurrect a bot that died 3 times, nor overwrite its status.
+      if (this.halted) {
+        this.setStatus('halted')
+        return
+      }
       this.suspended = true
       this.emit('message', notifyMessage('warn', '电量低于阈值，已主动断开连接'))
       this.disconnect({ reason: 'power_l3', keepDesired: true })
       this.setStatus('suspended')
-    } else if (prev === 'L3' || this.suspended) {
+    } else if ((prev === 'L3' || this.suspended) && !this.halted) {
       this.suspended = false
       if (this.desiredOnline && !this.bot) {
         this.logger.info('leaving L3 -> reconnecting')
@@ -756,6 +810,7 @@ class BotManager extends EventEmitter {
         : { items: [], empty: null },
       nav: this.nav.snapshot(),
       screen: this.screen.snapshot(),
+      signals: this.signalTable(),
       logs: this.logger ? this.logger.recent(100) : []
     }
   }

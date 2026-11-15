@@ -247,5 +247,45 @@ test('bridge: closing the last socket returns the screen authority to "no client
   ws.close()
   await new Promise((resolve) => setTimeout(resolve, 150))
   assert.equal(manager.uiClients, 0)
-  assert.equal(manager.screen.reported, null)
+  assert.deepEqual(manager.screen.snapshot().reports, {})
+})
+
+test('bridge: hello carries a per-client id and the startup signal table', async (t) => {
+  const { client } = await setup(t)
+  const hello = await client.wait((m) => m.t === 'hello')
+  assert.match(hello.clientId, /^ui-\d+$/)
+  assert.ok(hello.signals, 'self-check table is sent on handshake')
+  // The socket is registered before hello, so the page is a client that has
+  // not reported visibility yet -> unknown, never "assume on".
+  assert.equal(hello.signals.screen.status, 'unknown')
+  for (const key of ['battery', 'thermal', 'powerSave']) {
+    assert.ok(['unavailable', 'live', 'mock', 'live(termux-api)'].includes(hello.signals[key].status))
+  }
+})
+
+test('bridge: multi-client screen aggregation is any-on-wins, and disconnect re-aggregates', async (t) => {
+  const { client, ws, manager, server } = await setup(t)
+  const hello1 = await client.wait((m) => m.t === 'hello')
+  const second = new WebSocket(`ws://127.0.0.1:${server.port}/ws`)
+  const client2 = createClient(second)
+  await new Promise((resolve, reject) => {
+    second.once('open', resolve)
+    second.once('error', reject)
+  })
+  await client2.wait((m) => m.t === 'hello')
+  assert.equal(manager.uiClients, 2)
+
+  // desktop tab visible, phone tab in the background: any-on-wins
+  ws.send(JSON.stringify({ t: 'screen', on: true, id: 31 }))
+  await client.wait((m) => m.t === 'ack' && m.id === 31)
+  second.send(JSON.stringify({ t: 'screen', on: false, id: 32 }))
+  await client2.wait((m) => m.t === 'ack' && m.id === 32)
+  assert.equal(manager.tier.lastSignals.screenOn, true)
+
+  // closing the background tab must recompute from the remaining set
+  second.close()
+  await new Promise((resolve) => setTimeout(resolve, 150))
+  assert.equal(manager.uiClients, 1)
+  assert.deepEqual(Object.keys(manager.screen.snapshot().reports), [hello1.clientId])
+  assert.equal(manager.tier.lastSignals.screenOn, true, 'remaining observer still wins')
 })

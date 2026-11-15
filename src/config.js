@@ -57,6 +57,10 @@ const DEFAULTS = {
   eat: {
     enabled: true,
     threshold: 14,
+    // On normal difficulty the bot does not starve to death; it dies to mobs
+    // while weak. Empty inventory + low HP is therefore an alert, and at/below
+    // this HP we stop instead of feeding a death loop. 0 disables the halt.
+    disconnectAtHealth: 8,
     // Blacklist always wins over whitelist.
     blacklist: [
       'rotten_flesh',
@@ -95,6 +99,9 @@ const DEFAULTS = {
     minEmptySlots: 3,
     intervalMs: 300000,
     tossGapMs: 300,
+    // Any HP loss while standing at the drop point (lava splash, mob, cactus)
+    // aborts the toss loop and walks back instead of finishing the job.
+    abortOnDamage: true,
     retainCategories: ['tools', 'weapons', 'armor', 'food'],
     // type: 'lava' (walk near + toss) | 'container' (chest/hopper/barrel)
     // set must be true before cleanup is allowed; otherwise the bot would walk
@@ -249,6 +256,7 @@ function normalize (input, base = DEFAULTS) {
 
   const eat = cfg.eat
   eat.threshold = clamp(Number(eat.threshold) || 14, 0, 20)
+  eat.disconnectAtHealth = clamp(Number(eat.disconnectAtHealth) || 0, 0, 20)
   eat.blacklist = Array.isArray(eat.blacklist) ? eat.blacklist.map(String) : []
   eat.whitelist = Array.isArray(eat.whitelist) ? eat.whitelist.map(String) : []
 
@@ -256,6 +264,7 @@ function normalize (input, base = DEFAULTS) {
   inv.minEmptySlots = clamp(Number(inv.minEmptySlots) || 3, 1, 30)
   inv.intervalMs = clamp(Number(inv.intervalMs) || 300000, 10000, 86400000)
   inv.tossGapMs = clamp(Number(inv.tossGapMs) || 300, 100, 5000)
+  inv.abortOnDamage = inv.abortOnDamage !== false
   inv.retainCategories = Array.isArray(inv.retainCategories) ? inv.retainCategories.map(String) : []
   if (!['lava', 'container'].includes(inv.dropPoint.type)) {
     errors.push("inv.dropPoint.type must be 'lava' or 'container'")

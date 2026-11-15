@@ -40,6 +40,7 @@ class BridgeServer {
     this.server = null
     this.wss = null
     this.clients = new Set()
+    this.clientSeq = 0
     this.onManagerMessage = (msg) => this.broadcast(msg)
     this.onManagerStatus = (status) => this.broadcast({ t: 'status', status })
   }
@@ -115,19 +116,28 @@ class BridgeServer {
   }
 
   handleClient (ws) {
+    // Every socket is one observer. Multi-client rule (PRD verdict #3):
+    // any client reporting screen-on wins; a disconnect re-aggregates the
+    // remaining set instead of leaving the last report behind.
+    const clientId = `ui-${++this.clientSeq}`
+    ws.__clientId = clientId
     this.clients.add(ws)
     this.manager.setUiClients(this.clients.size)
-    const hello = helloMessage(this.manager.helloPayload())
+    const hello = helloMessage({ ...this.manager.helloPayload(), clientId })
     this.send(ws, hello)
-    this.logger.info(`ui client connected (${this.clients.size} total)`)
+    this.logger.info(`ui client ${clientId} connected (${this.clients.size} total)`)
 
     ws.on('message', (raw) => {
+      // Any upstream traffic proves the page is alive; refresh its screen
+      // report timestamp so a watching user is never treated as stale.
+      this.manager.touchScreen(clientId)
       this.onMessage(ws, raw).catch((err) => {
         this.send(ws, errorMessage(err.message, 'internal'))
       })
     })
     const drop = () => {
       if (!this.clients.delete(ws)) return
+      this.manager.dropScreenClient(clientId)
       this.manager.setUiClients(this.clients.size)
     }
     ws.on('close', drop)
@@ -199,7 +209,7 @@ class BridgeServer {
         this.manager.disconnect({ reason: payload.reason })
         return { ok: true }
       case 'screen':
-        return { ok: true, mode: this.manager.reportScreen(payload.on) }
+        return { ok: true, mode: this.manager.reportScreen(payload.on, (ws && ws.__clientId) || 'default') }
       case 'waypoint': {
         if (payload.action === 'save') return this.manager.saveWaypoint(payload.name)
         if (payload.action === 'go') return this.manager.goWaypoint(payload.name)

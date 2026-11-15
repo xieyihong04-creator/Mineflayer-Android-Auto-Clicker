@@ -3,7 +3,7 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const { InventoryManager } = require('../src/bot/inventory')
-const { FakeBot, FakePosition, makeConfig, fakeLogger } = require('./helpers')
+const { FakeBot, FakePosition, makeConfig, fakeLogger, makeWorldBot } = require('./helpers')
 
 function makeInv ({ configPatch = {}, bot = new FakeBot(), validateDropPoint = undefined } = {}) {
   const gotos = []
@@ -149,3 +149,79 @@ test('F6: scheduled cleanup is paused in L0', async () => {
 
 function gotoCount (gotos) { return gotos.length }
 function pick (g) { return { x: g.x, y: g.y, z: g.z } }
+
+test('F6: aborts and walks home when HP drops during the toss loop', async () => {
+  const bot = fillBot(new FakeBot({ pos: new FakePosition(0, 70, 0) }))
+  const notes = []
+  bot.tossStack = async (item) => {
+    bot.tossed.push(item.name)
+    if (bot.tossed.length === 1) bot.health = 11
+  }
+  const { inv, gotos } = makeInv({
+    bot,
+    validateDropPoint: () => ({ ok: true, checked: false })
+  })
+  inv.notify = (level, msg) => notes.push({ level, msg })
+  const result = await inv.maybeCleanup({ force: true, reason: 'full' })
+  assert.equal(result.ok, false)
+  assert.match(result.reason, /受到伤害/)
+  assert.equal(result.tossed, 1, 'the loop stops right after the damage')
+  assert.equal(bot.tossed.length, 1)
+  assert.deepEqual(pick(gotos.at(-1)), { x: 0, y: 70, z: 0 }, 'retreats home')
+  assert.ok(notes.some((n) => /受到伤害/.test(n.msg)))
+})
+
+test('F6: re-validates the standing spot on arrival (world may have changed)', async () => {
+  const bot = fillBot(makeWorldBot({ '10,63,10': 'lava' }, { pos: new FakePosition(0, 70, 0) }))
+  const { inv, gotos } = makeInv({
+    bot,
+    validateDropPoint: () => ({ ok: true, checked: true, standing: { x: 10, y: 64, z: 10 } })
+  })
+  const result = await inv.maybeCleanup({ force: true, reason: 'full' })
+  assert.equal(result.ok, false)
+  assert.match(result.reason, /^standing_unsafe_/)
+  assert.equal(bot.tossed.length, 0, 'never tosses from an unsafe spot')
+  assert.equal(gotoCount(gotos), 2, 'walks to the point, then back home')
+})
+
+test('F6: a full container aborts instead of pretending to deposit', async () => {
+  const bot = fillBot(new FakeBot({ pos: new FakePosition(0, 70, 0) }))
+  let closed = false
+  bot.blockAt = () => ({ name: 'hopper', position: { x: 100, y: 64, z: -200 } })
+  bot.openContainer = async () => ({
+    deposit: async () => {},
+    emptySlotCount: () => 0,
+    close: () => { closed = true }
+  })
+  const { inv } = makeInv({
+    bot,
+    validateDropPoint: () => ({ ok: true, checked: false }),
+    configPatch: { inv: { dropPoint: { set: true, type: 'container', x: 100, y: 64, z: -200 } } }
+  })
+  const result = await inv.maybeCleanup({ force: true, reason: 'full' })
+  assert.equal(result.ok, false)
+  assert.match(result.reason, /容器已满/)
+  assert.equal(closed, true)
+})
+
+test('F6: a container that fills mid-loop stops the deposit run', async () => {
+  const bot = fillBot(new FakeBot({ pos: new FakePosition(0, 70, 0) }))
+  let slots = 2
+  const deposits = []
+  bot.blockAt = () => ({ name: 'chest', position: { x: 100, y: 64, z: -200 } })
+  bot.openContainer = async () => ({
+    deposit: async (type, metadata, count) => { deposits.push(count); slots -= 1 },
+    emptySlotCount: () => slots,
+    close: () => {}
+  })
+  const { inv } = makeInv({
+    bot,
+    validateDropPoint: () => ({ ok: true, checked: false }),
+    configPatch: { inv: { dropPoint: { set: true, type: 'container', x: 100, y: 64, z: -200 } } }
+  })
+  const result = await inv.maybeCleanup({ force: true, reason: 'full' })
+  assert.equal(result.ok, false)
+  assert.match(result.reason, /容器已满/)
+  assert.equal(deposits.length, 2)
+  assert.equal(result.tossed, 2)
+})

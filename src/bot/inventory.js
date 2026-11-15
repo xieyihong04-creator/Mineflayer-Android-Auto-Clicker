@@ -1,7 +1,7 @@
 'use strict'
 
 const { emptySlotCount, snapshotInventory, selectTossable } = require('./items')
-const { validateDropPoint: defaultValidate } = require('./droppoint')
+const { validateDropPoint: defaultValidate, isSafeStanding } = require('./droppoint')
 
 const sleep = (ms) => new Promise((resolve) => {
   const t = setTimeout(resolve, ms)
@@ -101,6 +101,8 @@ class InventoryManager {
     const origin = bot.entity.position.clone()
     let tossed = 0
     let container = null
+    let standing = null
+    let startHealth = Number.isFinite(bot.health) ? bot.health : null
     this.lastReason = reason
     this.logger && this.logger.info(`cleanup start (${reason}) -> ${dp.type} ${dp.x},${dp.y},${dp.z}`)
     try {
@@ -122,10 +124,25 @@ class InventoryManager {
           target.y = check.standing.y
           target.z = check.standing.z
           range = 0
+          standing = check.standing
         }
       }
 
       await this.nav.goto(target.x, target.y, target.z, range, { reason: 'cleanup' })
+
+      // The world moved while we walked (lava spread, block broken, chunk
+      // reload). Re-check the spot before opening a container / tossing, so an
+      // outdated pre-flight cannot drop the bot into a hazard.
+      if (standing) {
+        const live = isSafeStanding(bot, standing.x, standing.y, standing.z)
+        if (!live.safe) {
+          const why = live.reason
+          this.logger && this.logger.warn(`cleanup aborted on arrival: standing spot unsafe (${why})`)
+          this.notify('warn', `丢弃点已不安全（${why}），已中止清包并返回`)
+          await this.returnHome(origin)
+          return { ok: false, reason: `standing_unsafe_${why}`, tossed }
+        }
+      }
 
       const items = selectTossable(bot.inventory.items(), this.config)
       if (items.length === 0) {
@@ -136,9 +153,18 @@ class InventoryManager {
       if (dp.type === 'container') {
         container = await this.openDropContainer(bot, dp)
       }
+      if (Number.isFinite(bot.health) && startHealth === null) startHealth = bot.health
 
       for (const item of items) {
         if (!this.getBot() || !this.getBot().entity) throw new Error('disconnected during cleanup')
+        // Standing next to lava / a mob is survivable for a second or two, not
+        // for 10 stacks. Any damage means "leave now", not "finish the job".
+        if (this.config.inv.abortOnDamage && startHealth !== null && Number.isFinite(bot.health) && bot.health < startHealth) {
+          throw new Error(`受到伤害（HP ${bot.health}/${startHealth}），已中止清包并后撤`)
+        }
+        if (container && this.containerFull(container)) {
+          throw new Error('目标容器已满，已停止清包')
+        }
         try {
           if (container) {
             await container.deposit(item.type, null, item.count)
@@ -169,9 +195,7 @@ class InventoryManager {
       try {
         if (container) container.close()
       } catch {}
-      try {
-        await this.nav.goto(origin.x, origin.y, origin.z, 1, { reason: 'cleanup-return' })
-      } catch {}
+      await this.returnHome(origin)
       return { ok: false, reason: err.message, tossed }
     } finally {
       this.busy = false
@@ -180,10 +204,30 @@ class InventoryManager {
     }
   }
 
+  async returnHome (origin) {
+    try {
+      await this.nav.goto(origin.x, origin.y, origin.z, 1, { reason: 'cleanup-return' })
+    } catch {}
+  }
+
+  /** A full hopper/chest would silently drop nothing; stop instead. */
+  containerFull (container) {
+    if (!container || typeof container.emptySlotCount !== 'function') return false
+    try {
+      return container.emptySlotCount() === 0
+    } catch {
+      return false
+    }
+  }
+
   async openDropContainer (bot, dp) {
     const block = bot.blockAt ? bot.blockAt({ x: dp.x, y: dp.y, z: dp.z }) : null
     if (!block) throw new Error('drop container block not loaded')
     const container = await bot.openContainer(block)
+    if (this.containerFull(container)) {
+      try { container.close() } catch {}
+      throw new Error('目标容器已满，已停止清包')
+    }
     return container
   }
 }

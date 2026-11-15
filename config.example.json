@@ -48,6 +48,7 @@
   "eat": {
     "enabled": true,
     "threshold": 14,
+    "disconnectAtHealth": 8,
     "blacklist": [
       "rotten_flesh",
       "spider_eye",
@@ -85,6 +86,7 @@
     "minEmptySlots": 3,
     "intervalMs": 300000,
     "tossGapMs": 300,
+    "abortOnDamage": true,
     "retainCategories": [
       "tools",
       "weapons",

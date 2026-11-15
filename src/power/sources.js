@@ -59,6 +59,11 @@ class AndroidSignalSource {
     }
   }
 
+  /**
+   * Battery: sysfs first (world-readable on most ROMs), then `termux-battery-status`
+   * (needs the Termux:API app + package). Returns `{battery: null}` when neither
+   * works - never a fake 100%.
+   */
   async readBattery () {
     for (const dir of this.batteryDirs) {
       try {
@@ -69,10 +74,26 @@ class AndroidSignalSource {
           const status = (await this.fs.readFile(`${dir}/status`, 'utf8')).trim().toLowerCase()
           charging = status === 'charging' || status === 'full'
         } catch {}
-        return { battery: capacity, charging }
+        return { battery: capacity, charging, via: 'sysfs' }
       } catch {}
     }
-    return { battery: null, charging: false }
+    const viaApi = await this.readBatteryViaApi()
+    if (viaApi) return viaApi
+    return { battery: null, charging: false, via: null }
+  }
+
+  async readBatteryViaApi () {
+    const out = await this.exec('termux-battery-status', [])
+    if (!out) return null
+    try {
+      const data = JSON.parse(out)
+      const capacity = Number(data.percentage)
+      if (!Number.isFinite(capacity)) return null
+      const plugged = String(data.plugged || '').toUpperCase()
+      return { battery: capacity, charging: plugged.includes('PLUGGED'), via: 'termux-api' }
+    } catch {
+      return null
+    }
   }
 
   async readThermal () {
@@ -89,7 +110,9 @@ class AndroidSignalSource {
         } catch {}
       }
     } catch {}
-    return { celsius: hottest, status: thermalStatusFromCelsius(hottest) }
+    // null means "no readable zone" (zone numbering is ROM-specific and some
+    // ROMs deny the whole directory). Do not collapse it to NONE=0.
+    return { celsius: hottest, status: hottest === null ? null : thermalStatusFromCelsius(hottest) }
   }
 
   async readScreenOn () {
@@ -115,14 +138,23 @@ class AndroidSignalSource {
     const mock = this.readMock()
     if (mock) {
       this.lastReadAt = Date.now()
+      const batteryKnown = Number.isFinite(mock.battery)
+      const thermalKnown = Number.isFinite(mock.thermal) || Number.isFinite(mock.thermalCelsius)
       return {
-        battery: Number.isFinite(mock.battery) ? mock.battery : null,
+        battery: batteryKnown ? mock.battery : null,
         charging: Boolean(mock.charging),
-        thermal: Number.isFinite(mock.thermal) ? mock.thermal : (Number.isFinite(mock.thermalCelsius) ? thermalStatusFromCelsius(mock.thermalCelsius) : 0),
+        thermal: thermalKnown
+          ? (Number.isFinite(mock.thermal) ? mock.thermal : thermalStatusFromCelsius(mock.thermalCelsius))
+          : null,
         // Desktop hint only; the manager still prefers real UI reports.
         screenHint: mock.screenOn === undefined ? null : Boolean(mock.screenOn),
         powerSave: Boolean(mock.powerSave),
-        source: 'mock'
+        source: 'mock',
+        availability: {
+          battery: batteryKnown ? 'mock' : 'unavailable',
+          thermal: thermalKnown ? 'mock' : 'unavailable',
+          powerSave: 'mock'
+        }
       }
     }
 
@@ -139,7 +171,14 @@ class AndroidSignalSource {
       thermalCelsius: thermal.celsius,
       screenHint: null,
       powerSave,
-      source: 'android'
+      source: 'android',
+      // Third state per signal: 'live' | 'unavailable'. Anything else must not
+      // be silently treated as a healthy value.
+      availability: {
+        battery: battery.battery === null ? 'unavailable' : (battery.via === 'termux-api' ? 'live(termux-api)' : 'live'),
+        thermal: thermal.status === null ? 'unavailable' : 'live',
+        powerSave: 'live'
+      }
     }
   }
 }

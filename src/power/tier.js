@@ -50,10 +50,15 @@ class PowerTierController {
     const skipL3 = charging && p.battery.l3SkipWhileCharging
 
     if (this.l3Latched) {
+      // Losing the battery reading is not proof of recovery: stay latched.
       const recovered = charging || (battery !== null && battery >= p.battery.l3ExitAbove)
       if (!recovered) return 'L3'
       this.l3Latched = false
     }
+
+    // Battery is the only signal whose absence can end with a dead phone. An
+    // unknown battery is NOT "100%": stay in L1 until a real reading arrives.
+    if (battery === null) return this.forcedMode || 'L1'
 
     if (battery !== null && battery < p.battery.l3Below && !skipL3) {
       return 'L3'
@@ -65,7 +70,7 @@ class PowerTierController {
 
     if (this.forcedMode) return this.forcedMode
 
-    if (battery !== null && battery < p.battery.l0Below) return 'L0'
+    if (battery < p.battery.l0Below) return 'L0'
 
     if (!signals.screenOn && !signals.navActive && signals.idle) return 'L1'
 
@@ -86,6 +91,12 @@ class PowerTierController {
     if (next === this.mode) {
       this.candidate = next
       return this.mode
+    }
+    // Asymmetric debounce: going UP (L0 -> L1 -> L2, L3 -> anything) is what the
+    // user asked for by turning the screen on; waiting 10s to restore the HUD is
+    // unacceptable. Going DOWN still needs the debounce to reject sensor noise.
+    if (RANK[next] > RANK[this.mode]) {
+      return this.apply(next, true)
     }
     if (next === this.candidate) {
       if (this.now() - this.candidateSince >= this.config.power.debounceMs) {

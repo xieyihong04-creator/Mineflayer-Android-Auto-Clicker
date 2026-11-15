@@ -8,12 +8,14 @@ const { selectFood, snapshotInventory } = require('./items')
  * - triggers when food <= threshold (default 14)
  * - only whitelisted food, blacklist always wins (rotten flesh / raw chicken /
  *   poisonous potato are never eaten)
- * - notifies once when food runs out
+ * - notifies once when food runs out, and at/below `eat.disconnectAtHealth`
+ *   stops the bot: on normal difficulty starvation itself is not lethal, but a
+ *   foodless bot dies to mobs, and the F9 breaker should be the last line.
  *
  * Red line: this listener must never be disabled by the power scheduler.
  */
 class AutoEater {
-  constructor ({ getBot, config, logger, notify = () => {}, nav = null, emit = () => {}, now = () => Date.now() }) {
+  constructor ({ getBot, config, logger, notify = () => {}, nav = null, emit = () => {}, now = () => Date.now(), onStarving = null }) {
     this.getBot = getBot
     this.config = config
     this.logger = logger
@@ -21,8 +23,10 @@ class AutoEater {
     this.nav = nav
     this.emit = emit
     this.now = now
+    this.onStarving = onStarving
     this.busy = false
     this.outNotified = false
+    this.starveNotified = false
     this.lastAttemptAt = 0
     this.cooldownMs = 1000
   }
@@ -30,7 +34,10 @@ class AutoEater {
   attach (bot) {
     if (!bot) return
     bot.on('health', () => {
-      if (bot.food > this.config.eat.threshold) this.outNotified = false
+      if (bot.food > this.config.eat.threshold) {
+        this.outNotified = false
+        this.starveNotified = false
+      }
       this.check('health').catch((err) => this.logger && this.logger.error(`auto-eat failed: ${err.message}`))
     })
   }
@@ -67,8 +74,11 @@ class AutoEater {
         this.logger && this.logger.warn('food exhausted: nothing edible left')
         this.notify('warn', '食物耗尽，请补充食物')
       }
+      this.checkStarving(bot)
       return { ok: false, reason: 'no_food' }
     }
+
+    if (this.starveNotified) this.starveNotified = false
 
     this.busy = true
     this.lastAttemptAt = this.now()
@@ -86,6 +96,29 @@ class AutoEater {
       this.busy = false
       if (goal && this.nav) {
         this.nav.resume(goal).catch((err) => this.logger && this.logger.warn(`resume nav failed: ${err.message}`))
+      }
+    }
+  }
+
+  /**
+   * Foodless + hurt: a normal-difficulty bot will not starve to death, it dies
+   * to the next mob. Alert immediately; at the configured HP stop the bot so
+   * the user can restock instead of watching the F9 breaker count deaths.
+   */
+  checkStarving (bot) {
+    const limit = Number(this.config.eat.disconnectAtHealth) || 0
+    if (limit <= 0) return
+    const hp = Number.isFinite(bot.health) ? bot.health : null
+    if (hp === null || hp > limit) return
+    if (this.starveNotified) return
+    this.starveNotified = true
+    this.logger && this.logger.warn(`food exhausted at ${hp} HP -> halt`)
+    this.notify('warn', `食物耗尽且生命仅 ${hp}，准备停机以免死亡，请补充食物`)
+    if (typeof this.onStarving === 'function') {
+      try {
+        this.onStarving({ health: hp, reason: 'food_exhausted' })
+      } catch (err) {
+        this.logger && this.logger.error(`onStarving failed: ${err.message}`)
       }
     }
   }

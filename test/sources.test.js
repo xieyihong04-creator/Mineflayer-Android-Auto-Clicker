@@ -26,7 +26,8 @@ test('mock signals are used when MCBOT_MOCK_POWER is set (desktop / tests)', asy
     // desktop hint for headless runs.
     screenHint: false,
     powerSave: true,
-    source: 'mock'
+    source: 'mock',
+    availability: { battery: 'mock', thermal: 'mock', powerSave: 'mock' }
   })
 })
 
@@ -59,17 +60,69 @@ test('reads battery capacity and charging state from sysfs', async () => {
   assert.equal(signals.powerSave, true)
 })
 
-test('a broken sysfs does not throw; battery becomes null', async () => {
+test('a broken sysfs does not throw; every signal degrades to its third state', async () => {
   const fakeFs = {
     readFile: async () => { throw new Error('EACCES') },
     readdir: async () => { throw new Error('EACCES') }
   }
   const source = new AndroidSignalSource({ fs: fakeFs, exec: async () => null, env: {} })
   const signals = await source.read()
-  assert.equal(signals.battery, null)
+  assert.equal(signals.battery, null, 'never a fake 100%')
   assert.equal(signals.screenHint, null)
   assert.equal(signals.powerSave, false)
-  assert.equal(signals.thermal, 0)
+  assert.equal(signals.thermal, null, 'unreadable thermal is null, not NONE=0')
+  assert.equal(signals.availability.battery, 'unavailable')
+  assert.equal(signals.availability.thermal, 'unavailable')
+})
+
+test('battery falls back to termux-battery-status when sysfs is denied', async () => {
+  const fakeFs = {
+    readFile: async () => { throw new Error('EACCES') },
+    readdir: async () => { throw new Error('EACCES') }
+  }
+  const exec = async (cmd) => {
+    if (cmd === 'termux-battery-status') {
+      return JSON.stringify({ percentage: 37, plugged: 'PLUGGED_USB', status: 'CHARGING' })
+    }
+    if (cmd === 'settings') return '0\n'
+    return null
+  }
+  const source = new AndroidSignalSource({ fs: fakeFs, exec, env: {} })
+  const signals = await source.read()
+  assert.equal(signals.battery, 37)
+  assert.equal(signals.charging, true)
+  assert.equal(signals.availability.battery, 'live(termux-api)')
+})
+
+test('termux-battery-status absent (Termux:API not installed) stays unavailable', async () => {
+  const fakeFs = {
+    readFile: async () => { throw new Error('ENOENT') },
+    readdir: async () => { throw new Error('ENOENT') }
+  }
+  const exec = async (cmd) => {
+    if (cmd === 'termux-battery-status') return null
+    return null
+  }
+  const source = new AndroidSignalSource({ fs: fakeFs, exec, env: {} })
+  const signals = await source.read()
+  assert.equal(signals.battery, null)
+  assert.equal(signals.charging, false)
+  assert.equal(signals.availability.battery, 'unavailable')
+})
+
+test('thermal zone numbering is model-specific: one readable zone is enough', async () => {
+  const fakeFs = {
+    readFile: async (p) => {
+      if (p.endsWith('thermal_zone7/temp')) return '51000\n'
+      throw new Error('ENOENT')
+    },
+    readdir: async () => ['thermal_zone0', 'thermal_zone7', 'cooling_device0']
+  }
+  const source = new AndroidSignalSource({ fs: fakeFs, exec: async () => null, env: {} })
+  const signals = await source.read()
+  assert.equal(signals.thermalCelsius, 51)
+  assert.equal(signals.thermal, 3)
+  assert.equal(signals.availability.thermal, 'live')
 })
 
 test('dumpsys screen probing degrades to null instead of guessing "on"', async () => {

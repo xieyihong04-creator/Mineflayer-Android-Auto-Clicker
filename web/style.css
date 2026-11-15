@@ -88,6 +88,8 @@ body { padding-bottom: env(safe-area-inset-bottom); }
   border-radius: 8px;
 }
 .banner a { color: var(--accent); }
+.banner.warn { border-color: rgba(255, 179, 71, 0.5); background: #2a2418; }
+.banner.warn strong { color: var(--warn); }
 
 main { padding: 12px 14px 28px; display: flex; flex-direction: column; gap: 12px; }
 

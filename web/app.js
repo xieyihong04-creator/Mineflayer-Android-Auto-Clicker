@@ -10,6 +10,8 @@ const els = {
   authBanner: document.getElementById('auth-banner'),
   authUrl: document.getElementById('auth-url'),
   authCode: document.getElementById('auth-code'),
+  signalBanner: document.getElementById('signal-banner'),
+  signalDetail: document.getElementById('signal-detail'),
   hp: document.getElementById('hp'),
   food: document.getElementById('food'),
   pos: document.getElementById('pos'),
@@ -79,7 +81,9 @@ const state = {
   lastState: null,
   lastStateAt: 0,
   ackSeq: 0,
-  waypointName: 'afk'
+  waypointName: 'afk',
+  signalTable: null,
+  screenOn: false
 }
 
 // ------------------------------------------------------------------ utilities
@@ -221,6 +225,9 @@ function handleMessage (msg) {
     case 'config':
       if (msg.config) applyConfig(msg.config)
       break
+    case 'signals':
+      applySignals(msg.signals)
+      break
     case 'error':
       toast(msg.msg, 'warn')
       break
@@ -238,6 +245,7 @@ function applyHello (msg) {
     renderStatus()
   }
   if (msg.mode) applyMode(msg.mode)
+  if (msg.signals) applySignals(msg.signals)
   if (msg.config) applyConfig(msg.config)
   if (Array.isArray(msg.chat)) {
     state.chat = msg.chat.slice(-CHAT_LIMIT)
@@ -298,6 +306,37 @@ function renderSignals () {
   els.pScreen.textContent = `${s.screenOn ? '亮' : '灭'}（${screenMap[s.screenSource] || s.screenSource || '--'}）`
   els.pSaver.textContent = s.powerSave ? '开' : '关'
   els.powerSrc.textContent = s.source === 'mock' ? '模拟信号' : 'Android 信号'
+}
+
+const SIGNAL_LABELS = { battery: '电量', thermal: '温度', screen: '屏幕', powerSave: '省电模式' }
+
+/**
+ * Startup self-check table from `hello` / `{t:'signals'}`. Every external
+ * signal has a third "unavailable" state; showing "100%" or "T0" when the
+ * sensor could not be read is exactly the bug this banner exists to prevent.
+ */
+function applySignals (table) {
+  if (!table) return
+  state.signalTable = table
+  const missing = []
+  for (const [key, label] of Object.entries(SIGNAL_LABELS)) {
+    const entry = table[key] || {}
+    if (entry.status === 'unavailable') missing.push(`${label}不可用`)
+    else if (key === 'screen' && entry.status === 'unknown') missing.push('屏幕状态未知（按灭屏处理）')
+  }
+  const hints = []
+  if ((table.battery || {}).status === 'unavailable') {
+    hints.push('电量需安装 Termux:API（pkg install termux-api）且允许 Termux:API 读取电池')
+  }
+  if ((table.thermal || {}).status === 'unavailable') {
+    hints.push('温度区 sysfs 不可读，L0 温度降档不会触发')
+  }
+  if (missing.length) {
+    els.signalDetail.textContent = `${missing.join('、')}。${hints.join('；')}`
+    els.signalBanner.classList.remove('hidden')
+  } else {
+    els.signalBanner.classList.add('hidden')
+  }
 }
 
 function renderStatus () {
@@ -574,6 +613,9 @@ setInterval(() => {
 
 // M1 screen authority: the page tells the core whether the phone screen is on.
 // `visibilitychange` fires on lock/background; unknown always degrades to off.
+// While visible we re-report every 45s so an actively-watching user is never
+// treated as a stale observer (server also refreshes on any upstream message).
+const SCREEN_HEARTBEAT_MS = 45000
 function reportVisibility () {
   const on = !document.hidden
   state.screenOn = on
@@ -582,6 +624,9 @@ function reportVisibility () {
   }
 }
 document.addEventListener('visibilitychange', reportVisibility)
+setInterval(() => {
+  if (!document.hidden && state.connected) reportVisibility()
+}, SCREEN_HEARTBEAT_MS)
 
 renderConn()
 function renderConn () {

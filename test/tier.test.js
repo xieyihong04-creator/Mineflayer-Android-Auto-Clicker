@@ -40,7 +40,7 @@ test('navigating keeps L2 even with the screen off', () => {
   c.tick(10500)
   assert.equal(tier.update(offIdle), 'L1', 'still -> L1 while idle')
   c.tick(10500)
-  assert.equal(tier.update(nav), 'L1', 'nav starts the L2 debounce')
+  assert.equal(tier.update(nav), 'L2', 'upgrade is immediate: navigating means activity')
   c.tick(10000)
   assert.equal(tier.update(nav), 'L2', 'nav returns to L2 after debounce')
 })
@@ -141,9 +141,7 @@ test('L3 hysteresis: charging or >= l3ExitAbove releases the latch', () => {
   const c = clock()
   const tier = new PowerTierController({ config: makeConfig(), now: c.now })
   assert.equal(tier.update({ ...awake, battery: 9 }), 'L3')
-  assert.equal(tier.update({ ...awake, battery: 21 }), 'L3', 'release still respects the 10s debounce')
-  c.tick(10000)
-  assert.equal(tier.update({ ...awake, battery: 21 }), 'L2')
+  assert.equal(tier.update({ ...awake, battery: 21 }), 'L2', 'recovery is an upgrade -> immediate')
   assert.equal(tier.update({ ...awake, battery: 9 }), 'L3', 'and it can latch again immediately')
 })
 
@@ -155,9 +153,7 @@ test('L3 hysteresis: l3ExitAbove is configurable', () => {
   })
   assert.equal(tier.update({ ...awake, battery: 9 }), 'L3')
   assert.equal(tier.update({ ...awake, battery: 30 }), 'L3', 'mid-band stays latched')
-  assert.equal(tier.update({ ...awake, battery: 36 }), 'L3')
-  c.tick(10000)
-  assert.equal(tier.update({ ...awake, battery: 36 }), 'L2', 'released only above l3ExitAbove')
+  assert.equal(tier.update({ ...awake, battery: 36 }), 'L2', 'released only above l3ExitAbove, and immediately')
 })
 
 test('charging + MODERATE thermal still goes L0 (heat does not care about the cable)', () => {
@@ -167,9 +163,7 @@ test('charging + MODERATE thermal still goes L0 (heat does not care about the ca
   assert.equal(tier.update(hot), 'L2', 'debounced')
   c.tick(10000)
   assert.equal(tier.update(hot), 'L0')
-  assert.equal(tier.update({ ...awake, charging: true, thermal: 0 }), 'L0')
-  c.tick(10000)
-  assert.equal(tier.update({ ...awake, charging: true, thermal: 0 }), 'L2')
+  assert.equal(tier.update({ ...awake, charging: true, thermal: 0 }), 'L2', 'cooling down is an upgrade -> immediate')
 })
 
 test('thermal L0 outranks a manual L2 override', () => {
@@ -181,10 +175,7 @@ test('thermal L0 outranks a manual L2 override', () => {
   c.tick(10000)
   assert.equal(tier.update(hot), 'L0', 'safety beats the user preference')
   assert.equal(tier.forcedMode, 'L2', 'but the preference is remembered')
-  c.tick(10000)
-  assert.equal(tier.update(awake), 'L0', 'the debounce starts when the sensor drops')
-  c.tick(10000)
-  assert.equal(tier.update(awake), 'L2', 'and re-applies once cool')
+  assert.equal(tier.update(awake), 'L2', 'and re-applies immediately once cool')
 })
 
 test('unknown screen state is off, not on', () => {
@@ -194,4 +185,27 @@ test('unknown screen state is off, not on', () => {
   assert.equal(tier.update(unknown), 'L2')
   c.tick(10000)
   assert.equal(tier.update(unknown), 'L1')
+})
+
+test('asymmetric debounce: downgrade still waits 10s, upgrade is immediate', () => {
+  const c = clock()
+  const tier = new PowerTierController({ config: makeConfig(), now: c.now })
+  const idle = { ...awake, battery: 15, idle: true }
+  assert.equal(tier.update(idle), 'L2', 'L0 entry starts the debounce')
+  c.tick(9000)
+  assert.equal(tier.update(idle), 'L2')
+  c.tick(1000)
+  assert.equal(tier.update(idle), 'L0', 'downgrade after 10s')
+  assert.equal(tier.update({ ...awake, battery: 80, screenOn: false, idle: true }), 'L1', 'upgrade is instant')
+  assert.equal(tier.update(awake), 'L2', 'and again')
+})
+
+test('unknown battery is L1, never L2 (no fake 100%)', () => {
+  const c = clock()
+  const tier = new PowerTierController({ config: makeConfig(), now: c.now })
+  const unknown = { ...awake, battery: null, idle: true }
+  assert.equal(tier.update(unknown), 'L2', 'L2 -> L1 is a downgrade, so it still debounces')
+  c.tick(10000)
+  assert.equal(tier.update(unknown), 'L1')
+  assert.equal(tier.update({ ...awake, battery: null, screenOn: true }), 'L1', 'still L1 with the screen on')
 })

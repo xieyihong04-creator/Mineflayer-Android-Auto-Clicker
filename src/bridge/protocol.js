@@ -21,10 +21,11 @@ class ProtocolError extends Error {
 // `disconnect` / `waypoint` / `screen` are additive v1 extensions (no field
 // changes), needed by F8, P1 and the event-based screen authority. The frozen
 // message shapes above are unchanged, and `hello` now carries `protoVersion`
-// so an M2 app can detect a version mismatch on handshake.
+// so an M2 app can detect a version mismatch on handshake. Upstream `signals`
+// is the additive self-check table (live / unavailable / no_client).
 const DOWN_TYPES = new Set(['cmd', 'goto', 'stop', 'eat', 'toss', 'setMode', 'connect', 'disconnect', 'waypoint', 'screen', 'config', 'ping'])
 const PROTO_VERSION = 1
-const UP_TYPES = new Set(['state', 'chat', 'inv', 'nav', 'mode', 'log', 'hello', 'error', 'notify', 'auth', 'config'])
+const UP_TYPES = new Set(['state', 'chat', 'inv', 'nav', 'mode', 'log', 'hello', 'error', 'notify', 'auth', 'config', 'signals'])
 
 function num (value, name, { min = -Infinity, max = Infinity } = {}) {
   const n = Number(value)
@@ -192,6 +193,10 @@ function notifyMessage (level, message) {
   return { t: 'notify', level, msg: String(message), ts: Date.now() }
 }
 
+function signalsMessage (signals) {
+  return { t: 'signals', signals }
+}
+
 function round2 (n) {
   return Math.round(Number(n) * 100) / 100
 }
@@ -210,5 +215,6 @@ module.exports = {
   logMessage,
   helloMessage,
   errorMessage,
-  notifyMessage
+  notifyMessage,
+  signalsMessage
 }

@@ -28,11 +28,11 @@ test('screen: no UI client means "off" (no observer, keep saving power)', () => 
 test('screen: a visibility report from a connected UI is authoritative', () => {
   const { tracker } = makeTracker()
   tracker.setClients(1)
-  tracker.report(true)
+  tracker.report('ui-1', true)
   assert.equal(tracker.evaluate().source, 'ui')
   assert.equal(tracker.evaluate().on, true)
 
-  tracker.report(false)
+  tracker.report('ui-1', false)
   const off = tracker.evaluate()
   assert.equal(off.on, false)
   assert.equal(off.source, 'ui')
@@ -49,7 +49,7 @@ test('screen: connected but never reported -> fail-safe off, not on', () => {
 test('screen: a stale report stops counting', () => {
   const { tracker, advance, config } = makeTracker({ power: { screen: { reportStaleMs: 60000 } } })
   tracker.setClients(1)
-  tracker.report(true)
+  tracker.report('ui-1', true)
   assert.equal(tracker.evaluate().on, true)
   advance(config.power.screen.reportStaleMs + 1)
   const stale = tracker.evaluate()
@@ -57,13 +57,58 @@ test('screen: a stale report stops counting', () => {
   assert.equal(stale.source, 'unknown')
 })
 
+test('screen: an upstream message refreshes the report timestamp (touch)', () => {
+  const { tracker, advance, config } = makeTracker({ power: { screen: { reportStaleMs: 60000 } } })
+  tracker.setClients(1)
+  tracker.report('ui-1', true)
+  // A chatty client (state poll acks, pings) must not be punished for not
+  // re-sending `screen` itself.
+  advance(config.power.screen.reportStaleMs - 1000)
+  assert.equal(tracker.touch('ui-1'), true)
+  advance(3000)
+  const result = tracker.evaluate()
+  assert.equal(result.on, true)
+  assert.equal(result.source, 'ui')
+})
+
+test('screen: touch of a client that never reported changes nothing', () => {
+  const { tracker } = makeTracker()
+  tracker.setClients(1)
+  assert.equal(tracker.touch('ghost'), false)
+  assert.equal(tracker.evaluate().source, 'unknown')
+})
+
+test('screen: multi-client any-on-wins (background phone + visible desktop)', () => {
+  const { tracker } = makeTracker()
+  tracker.setClients(2)
+  tracker.report('phone', false)
+  tracker.report('desktop', true)
+  assert.equal(tracker.evaluate().on, true)
+
+  tracker.report('desktop', false)
+  assert.equal(tracker.evaluate().on, false)
+})
+
+test('screen: removing one client re-aggregates the remaining set', () => {
+  const { tracker } = makeTracker()
+  tracker.setClients(2)
+  tracker.report('phone', true)
+  tracker.report('desktop', false)
+  assert.equal(tracker.evaluate().on, true)
+  tracker.removeClient('phone')
+  tracker.setClients(1)
+  const result = tracker.evaluate()
+  assert.equal(result.on, false)
+  assert.equal(result.source, 'ui')
+})
+
 test('screen: losing the last client discards its report', () => {
   const { tracker } = makeTracker()
   tracker.setClients(1)
-  tracker.report(true)
+  tracker.report('ui-1', true)
   assert.equal(tracker.evaluate().on, true)
   tracker.setClients(0)
-  assert.equal(tracker.reported, null)
+  assert.deepEqual(tracker.snapshot().reports, {})
   assert.equal(tracker.evaluate().on, false)
 })
 

@@ -225,15 +225,15 @@ test('screen authority: UI reports drive the tier signals, no-client means off',
   assert.equal(manager.tier.lastSignals.screenSource, 'no_client')
 
   manager.setUiClients(1)
-  manager.reportScreen(true)
+  manager.reportScreen(true, 'ui-1')
   assert.equal(manager.tier.lastSignals.screenOn, true)
   assert.equal(manager.tier.lastSignals.screenSource, 'ui')
 
-  manager.reportScreen(false)
+  manager.reportScreen(false, 'ui-1')
   assert.equal(manager.tier.lastSignals.screenOn, false)
 
   manager.setUiClients(0)
-  assert.equal(manager.screen.reported, null, 'closing the tab discards the report')
+  assert.deepEqual(manager.screen.snapshot().reports, {}, 'closing the tab discards the report')
 })
 
 test('F9: manager halts after the respawn circuit breaker and stops reconnecting', (t) => {
@@ -308,4 +308,107 @@ test('F6: drop point check is wired to the live world', () => {
   const offline = manager.checkDropPoint()
   assert.equal(offline.checked, false, 'offline -> nothing to validate against')
   assert.equal(offline.reason, 'no_world')
+})
+
+test('halt separation: L3 enter/exit must never resurrect an F9 halt', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] })
+  const { manager, bots } = makeManager({ respawn: { maxConsecutive: 2, delayMs: 1000 } })
+  t.after(() => manager.destroy())
+  manager.start()
+  manager.connect()
+  bots[0].emit('spawn')
+  bots[0].emit('death')
+  t.mock.timers.tick(1000)
+  bots[0].emit('death')
+  assert.equal(manager.status, 'halted')
+
+  manager.applyModeActions('L3', 'L2')
+  assert.equal(manager.status, 'halted', 'L3 must not overwrite the halt status')
+  assert.equal(manager.suspended, false, 'a halted bot is not "power suspended"')
+  assert.equal(manager.desiredOnline, false, 'L3 must not re-arm the reconnect intent')
+
+  manager.applyModeActions('L2', 'L3')
+  t.mock.timers.tick(120000)
+  assert.equal(bots.length, 1, 'leaving L3 while halted does not reconnect')
+  assert.equal(manager.halted, true)
+
+  manager.resume()
+  assert.equal(manager.halted, false, 'only a manual resume clears it')
+})
+
+test('halt separation: charging/L3 recovery cannot clear a food-exhaustion halt', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] })
+  const { manager, bots } = makeManager()
+  t.after(() => manager.destroy())
+  manager.start()
+  manager.connect()
+  bots[0].emit('spawn')
+
+  manager.halt('food_exhausted', '食物耗尽')
+  assert.equal(manager.status, 'halted')
+  manager.updatePower({
+    battery: 90,
+    charging: true,
+    thermal: 0,
+    powerSave: false,
+    availability: { battery: 'live', thermal: 'live', powerSave: 'live' }
+  })
+  manager.applyModeActions('L2', 'L3')
+  t.mock.timers.tick(30000)
+  assert.equal(manager.halted, true)
+  assert.equal(manager.status, 'halted')
+  assert.equal(bots.length, 1)
+})
+
+test('signal self-check: every unavailable sensor is a third state in hello', () => {
+  const { manager } = makeManager()
+  manager.updatePower({
+    battery: null,
+    charging: false,
+    thermal: null,
+    powerSave: false,
+    availability: { battery: 'unavailable', thermal: 'unavailable', powerSave: 'live' }
+  })
+  const table = manager.signalTable()
+  assert.equal(table.battery.status, 'unavailable')
+  assert.equal(table.thermal.status, 'unavailable')
+  assert.equal(table.powerSave.status, 'live')
+  assert.equal(table.screen.status, 'no_client')
+  assert.equal(manager.helloPayload().signals.battery.status, 'unavailable')
+
+  manager.setUiClients(1)
+  manager.reportScreen(true, 'ui-1')
+  assert.equal(manager.signalTable().screen.status, 'live')
+  assert.equal(manager.signalTable().screen.source, 'ui-events')
+})
+
+test('signal self-check: termux-api fallback is reported, not hidden', () => {
+  const { manager } = makeManager()
+  manager.updatePower({
+    battery: 42,
+    charging: true,
+    thermal: 1,
+    powerSave: false,
+    availability: { battery: 'live(termux-api)', thermal: 'live', powerSave: 'live' }
+  })
+  assert.equal(manager.signalTable().battery.status, 'live(termux-api)')
+})
+
+test('signal self-check: table is pushed once per change, not per poll', () => {
+  const { manager } = makeManager()
+  const pushes = []
+  manager.on('message', (m) => { if (m.t === 'signals') pushes.push(m) })
+  const signals = {
+    battery: 80,
+    charging: false,
+    thermal: 0,
+    powerSave: false,
+    availability: { battery: 'live', thermal: 'live', powerSave: 'live' }
+  }
+  manager.updatePower(signals)
+  manager.updatePower(signals)
+  assert.equal(pushes.length, 1)
+  manager.updatePower({ ...signals, availability: { battery: 'unavailable', thermal: 'live', powerSave: 'live' } })
+  assert.equal(pushes.length, 2)
+  assert.equal(pushes[1].signals.battery.status, 'unavailable')
 })

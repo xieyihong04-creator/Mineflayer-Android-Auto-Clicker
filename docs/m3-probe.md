@@ -1,6 +1,6 @@
 # M3 探针：nodejs-mobile 可行性
 
-交接单里"现在可并行做"的两项。**结论先写：门还没过。** 探针证明的是"同一份代码在 Node 18.20.4 上能连上服务器、APK 能构建"，**没有**证明"libnode.so 在 Android 上起得来并连上"——后者需要真机，本沙箱没有。
+交接单里"现在可并行做"的两项。**结论先写：门过了（2026-11-15 22:06，真机 v10）。** 手机上装 v10、地址 `mcfallout.net`、勾微软登录，页面判定卡返回 `通过 · 已连接并 spawn`：版本 **26.1**、坐标 **-137.6 / 35 / 912.2**、用时 **2975 ms**，登录卡片显示 `已登录：Xieh. token 已缓存`。也就是说 `libnode.so` 在 Android 上起得来、mineflayer 在里面能连上正版服务器并 spawn——按交接单，第 3 步可以开始。
 
 ## 一、实测事实（2026-11-15，均可复现）
 
@@ -103,7 +103,8 @@ adb shell am start -n dev.mcbot.console.probe/.MainActivity \
 | JNI 符号接了 `node::Start` | **已证明（静态）** | `libnative-lib.so` 导入 `_ZN4node5StartEiPPc`，`libnode.so` 导出同名符号 |
 | **libnode.so 在 Android 上起得来** | **已证明（真机，2026-11-15）** | 探针页面返回 `node 18.20.4 / v8 10.2.154.26-node.37 / platform android / arch arm64 / uv 1.44.2`，HTTP 服务与 JSON 落盘都正常 |
 | **mineflayer 在 nodejs-mobile 里能加载** | **已证明（真机，2026-11-15 11:44）** | `require mineflayer` ok（4.39.0，191 ms）、`require minecraft-protocol` ok（1.68.0），随后 `createBot` 真的发出了 TCP 连接 |
-| **Android 上 mineflayer 能连上并 spawn** | **未验证** | 当次目标是手机自己的 `127.0.0.1:25565`，没有任何服务端监听，报 `ECONNREFUSED` —— 这是**测试环境**问题，不是代码路径；需指向真实服务端复跑 |
+| **Android 上 mineflayer 能连上并 spawn** | **已证明（真机，2026-11-15 22:06，v10）** | 判定卡 `通过 · 已连接并 spawn`：版本 26.1、坐标 -137.6/35/912.2、2975 ms；目标 `mcfallout.net` → SRV `jp.mcfallout.net:25565` → `172.65.211.204`，正版服（online-mode）登录后 spawn |
+| 微软登录在真机上持久 | **已证明（真机，2026-11-15 22:06）** | 同一次运行前未重新要设备码，卡片显示 `已登录：Xieh. token 已缓存，再连不会重新要设备码` |
 
 ### 真机第一次运行已经证明了什么
 
@@ -112,7 +113,7 @@ adb shell am start -n dev.mcbot.console.probe/.MainActivity \
 - **libnode.so 在这个 arm64 设备上加载、启动、执行 JS、开 TCP 监听、写文件都正常**——门的一半过了，而且是此前最不确定的一半（4 KB 对齐在 4 KB 页设备上不是问题）。
 - 失败点在**我们自己的打包裁剪**，不在 nodejs-mobile。`createBot` 都没走到。
 
-按交接单的禁止条款：**第 3 步（正式集成）仍不启动**，等真机跑出 `connect.ok=true, detail="spawned"`。
+按交接单的禁止条款，第 3 步（正式集成）当时不启动，要等真机跑出 `connect.ok=true, detail="spawned"`。**该条件已于 2026-11-15 22:06 满足（见第七节"第六次真机运行"），第 3 步现已解锁。**
 
 ## 四、上真机前必须看的两个风险
 
@@ -121,6 +122,7 @@ adb shell am start -n dev.mcbot.console.probe/.MainActivity \
    adb shell getconf PAGE_SIZE     # 4096 才有戏；16384 就是硬阻塞
    ```
    真撞上只能等 nodejs-mobile 用 NDK r27+ 重编（上游 r24 之后没再发版），或者换方案（Termux 继续用）。
+   **这台设备已排除**：libnode.so 能加载执行（4 KB 页），风险仅对其它机型保留。
 2. **Node 18 已 EOL**：没有安全更新，且 mineflayer 声明 `>=22`。这次实测能跑，但上游任何一次依赖升级都可能踩到 18 不支持的语法/API。真要长期用 M3，得给 `package-lock.json` 上锁并冻结升级。
 
 ## 五、对第 3 步的设计约束（先记下来，别到时候返工）
@@ -183,3 +185,32 @@ connect 172.65.211.204:25565 → kicked: "Invalid hostname. Please refer to ...
 ```
 
 `kicked: Invalid hostname` 直接点名：TCPShield 按握手 hostname 路由，收到的是 IP，于是拒连，并给了那个 `Unknown #389` 的假状态。v10 把握手 hostname 恢复成用户输入的域名，socket 仍连解析后的 IP。
+
+## 七、第六次真机运行（2026-11-15 22:06，v10）——门过了
+
+```
+libnode 已就绪 · 127.0.0.1:3999
+通过 · 已连接并 spawn
+  版本 26.1，坐标 -137.6, 35, 912.2，用时 2975 ms
+服务器地址 mcfallout.net:25565
+实际连接：172.65.211.204:25565（SRV → jp.mcfallout.net:25565）
+已登录：Xieh. token 已缓存，再连不会重新要设备码；失效时会自动刷新
+```
+
+这是交接单要求的唯一判定条件（`connect.ok=true` 且 `detail="spawned"`）第一次在**真机 + nodejs-mobile + 正版服**三种条件下同时成立。逐项对上：
+
+- 握手域名：`mcfallout.net` 原样进握手包，TCPShield 不再回 `Invalid hostname`，也不再给 `Unknown #389` 的假状态。
+- 版本：服务器协商出 **26.1**（v9/v10 的 `ping` 步骤同一次里就会显示 `BungeeCord 1.8.x-26.x · protocol 775`），`minecraft-data` 的 26.1 数据在包里，serializer 一次建起来。
+- 认证：online-mode 下用缓存的微软 token 登录成功，玩家名 `Xieh.`；设备码这次没有重新弹。
+- 网络：SRV 走 DoH（c-ares 在 Android 上不可靠，这条路已被绕开），A 记录解析到 TCPShield 日本入口。
+
+之前五次失败的四个原因全部在这一版里消掉了：打包裁剪（v8）、预发布协议别名（v9）、握手域名丢失（v10 根因）、以及最早那次的错误归类（v6）。剩下没动的东西保持不动：WebView 壳、WS 协议、电源分档逻辑都还是 M2 验收时那份。
+
+**门过之后仍属"假设，未测量"的**：nodejs-mobile 常驻下的耗电、发热、后台存活时长。探针只证明"能连上"，没有测"连多久"。
+
+### 这一步之后要做什么
+
+交接单第 3–6 步现在可以按顺序推进：`src/index.js` 在 FGS 里启动（不碰 WebView/WS）→ `src` + `node_modules` 打进 assets（沿用探针这份 `prepare-bundle.js` 的裁剪与校验）→ Node 生命周期跟 FGS 绑定（一个进程只起一次，崩溃不进程内重启）→ 真机验收。
+
+第一件要落实的约束：**探针和正式 App 会各自解压一份 node 包**。合并时只能留一份，且解压目录必须从 `files/node` 改到正式 App 的目录，同时把 `files/auth` 的 token 缓存路径带过去——否则升级一次就掉登录。
+

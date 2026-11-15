@@ -7,7 +7,7 @@ const { PowerTierController } = require('../src/power/tier')
 const { deepMerge } = require('../src/config')
 const { FakeBot, makeConfig, fakeLogger, navStub } = require('./helpers')
 
-function makeManager (configPatch = {}, { createBot } = {}) {
+function makeManager (configPatch = {}, { createBot, nav } = {}) {
   const config = makeConfig({
     server: { host: 'mc.example.com', port: 25565, username: 'Tester' },
     ...configPatch
@@ -27,7 +27,7 @@ function makeManager (configPatch = {}, { createBot } = {}) {
     configStore: store,
     logger,
     tier,
-    nav: navStub(),
+    nav: nav || navStub(),
     createBot: createBot || (() => {
       const bot = new FakeBot()
       bots.push(bot)
@@ -193,4 +193,119 @@ test('F2: state snapshot carries hp/food/pos/yaw/nav/mode/online', (t) => {
   assert.equal(state.mode, 'L2')
   assert.equal(state.connected, true)
   assert.ok(Number.isFinite(state.online))
+})
+
+test('verdict #1: L0 never serializes state without a UI client', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] })
+  const { manager, bots } = makeManager()
+  t.after(() => manager.destroy())
+  const states = []
+  manager.on('message', (m) => { if (m.t === 'state') states.push(m) })
+  manager.start()
+  manager.connect()
+  bots[0].emit('spawn')
+  assert.equal(states.length, 0, 'no observer -> no state at all')
+
+  manager.applyModeActions('L0', 'L2')
+  t.mock.timers.tick(60000)
+  assert.equal(states.length, 0, 'L0 heartbeat is skipped with zero clients')
+
+  manager.setUiClients(1)
+  t.mock.timers.tick(20000)
+  assert.ok(states.length >= 1, 'a client makes the L0 heartbeat run')
+})
+
+test('screen authority: UI reports drive the tier signals, no-client means off', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] })
+  const { manager } = makeManager()
+  t.after(() => manager.destroy())
+
+  manager.updatePower({ battery: 80, charging: false, thermal: 0, powerSave: false, screenHint: null })
+  assert.equal(manager.tier.lastSignals.screenOn, false)
+  assert.equal(manager.tier.lastSignals.screenSource, 'no_client')
+
+  manager.setUiClients(1)
+  manager.reportScreen(true)
+  assert.equal(manager.tier.lastSignals.screenOn, true)
+  assert.equal(manager.tier.lastSignals.screenSource, 'ui')
+
+  manager.reportScreen(false)
+  assert.equal(manager.tier.lastSignals.screenOn, false)
+
+  manager.setUiClients(0)
+  assert.equal(manager.screen.reported, null, 'closing the tab discards the report')
+})
+
+test('F9: manager halts after the respawn circuit breaker and stops reconnecting', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] })
+  const { manager, bots } = makeManager({ respawn: { maxConsecutive: 2, delayMs: 1000 } })
+  t.after(() => manager.destroy())
+  manager.start()
+  manager.connect()
+  bots[0].emit('spawn')
+
+  bots[0].emit('death')
+  t.mock.timers.tick(1000)
+  bots[0].emit('death')
+
+  assert.equal(manager.status, 'halted')
+  assert.equal(manager.halted, true)
+  assert.equal(manager.desiredOnline, false)
+  assert.equal(bots[0].respawnCalls, 0, 'the third death trips the breaker instead of respawning')
+  t.mock.timers.tick(120000)
+  assert.equal(bots.length, 1, 'halted means no reconnect loop')
+
+  assert.equal(manager.resume().ok, true, 'manual resume clears the halt')
+  assert.equal(manager.halted, false)
+})
+
+test('F9: reconnect after a kick walks back to the AFK waypoint', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] })
+  const gotos = []
+  const nav = {
+    ...navStub(),
+    goto: async (x, y, z, range, opts) => { gotos.push({ x, y, z, range, opts }); return { x, y, z, range } }
+  }
+  const { manager, bots } = makeManager(
+    { waypoints: { afk: { x: 5, y: 64, z: -7 } } },
+    { nav }
+  )
+  t.after(() => manager.destroy())
+  manager.connect()
+  bots[0].emit('spawn')
+  assert.equal(gotos.length, 0, 'a first connect does not move the bot')
+
+  bots[0].emit('end', 'server restart')
+  t.mock.timers.tick(1000)
+  bots[1].emit('spawn')
+  assert.equal(gotos.length, 1)
+  assert.deepEqual({ x: gotos[0].x, y: gotos[0].y, z: gotos[0].z }, { x: 5, y: 64, z: -7 })
+})
+
+test('F9: respawn walks back to the waypoint after the bot is back', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] })
+  const gotos = []
+  const nav = {
+    ...navStub(),
+    goto: async (x, y, z, range, opts) => { gotos.push({ x, y, z, opts }); return { x, y, z } }
+  }
+  const { manager, bots } = makeManager(
+    { waypoints: { afk: { x: 1, y: 65, z: 2 } }, respawn: { delayMs: 500 } },
+    { nav }
+  )
+  t.after(() => manager.destroy())
+  manager.connect()
+  bots[0].emit('spawn')
+  bots[0].emit('death')
+  t.mock.timers.tick(500)
+  bots[0].emit('spawn')
+  assert.equal(gotos.length, 1)
+  assert.equal(gotos[0].opts.reason, 'return_respawn')
+})
+
+test('F6: drop point check is wired to the live world', () => {
+  const { manager } = makeManager()
+  const offline = manager.checkDropPoint()
+  assert.equal(offline.checked, false, 'offline -> nothing to validate against')
+  assert.equal(offline.reason, 'no_world')
 })

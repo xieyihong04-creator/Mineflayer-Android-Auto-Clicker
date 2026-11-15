@@ -2,7 +2,7 @@
 
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { parseDown, ProtocolError, stateMessage } = require('../src/bridge/protocol')
+const { parseDown, ProtocolError, stateMessage, helloMessage } = require('../src/bridge/protocol')
 
 test('protocol: accepts the frozen downstream messages', () => {
   assert.deepEqual(parseDown({ t: 'goto', x: 1, y: 2, z: 3, range: 2 }), {
@@ -69,4 +69,16 @@ test('protocol: state message matches §5 shape', () => {
   assert.equal(msg.mode, 'L1')
   assert.equal(msg.online, 65)
   assert.equal(msg.connected, true)
+})
+
+test('screen report is validated (Page Visibility handshake)', () => {
+  assert.deepEqual(parseDown({ t: 'screen', on: false }), { type: 'screen', payload: { on: false } })
+  assert.throws(() => parseDown({ t: 'screen', on: 'yes' }), /screen.on must be a boolean/)
+  assert.throws(() => parseDown({ t: 'screen' }), /screen.on must be a boolean/)
+})
+
+test('hello advertises protoVersion so an M2 app can detect a mismatch', () => {
+  const hello = helloMessage({ mode: 'L2' })
+  assert.equal(hello.protocol, 1)
+  assert.equal(hello.protoVersion, 1)
 })

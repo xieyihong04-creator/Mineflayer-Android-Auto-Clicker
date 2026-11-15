@@ -126,3 +126,72 @@ test('stateHz per tier matches the PRD', () => {
   assert.equal(tier.update(low), 'L0')
   assert.equal(tier.stateHz, 0.05)
 })
+
+test('L3 hysteresis: 9% enters, 15% stays (do not flap around 10%)', () => {
+  const c = clock()
+  const tier = new PowerTierController({ config: makeConfig(), now: c.now })
+  assert.equal(tier.update({ ...awake, battery: 9 }), 'L3')
+  // Charging status stays false: only the battery threshold can release it.
+  assert.equal(tier.update({ ...awake, battery: 11 }), 'L3')
+  assert.equal(tier.update({ ...awake, battery: 15 }), 'L3')
+  assert.equal(tier.update({ ...awake, battery: 19 }), 'L3')
+})
+
+test('L3 hysteresis: charging or >= l3ExitAbove releases the latch', () => {
+  const c = clock()
+  const tier = new PowerTierController({ config: makeConfig(), now: c.now })
+  assert.equal(tier.update({ ...awake, battery: 9 }), 'L3')
+  assert.equal(tier.update({ ...awake, battery: 21 }), 'L3', 'release still respects the 10s debounce')
+  c.tick(10000)
+  assert.equal(tier.update({ ...awake, battery: 21 }), 'L2')
+  assert.equal(tier.update({ ...awake, battery: 9 }), 'L3', 'and it can latch again immediately')
+})
+
+test('L3 hysteresis: l3ExitAbove is configurable', () => {
+  const c = clock()
+  const tier = new PowerTierController({
+    config: makeConfig({ power: { battery: { l3Below: 10, l3ExitAbove: 35 } } }),
+    now: c.now
+  })
+  assert.equal(tier.update({ ...awake, battery: 9 }), 'L3')
+  assert.equal(tier.update({ ...awake, battery: 30 }), 'L3', 'mid-band stays latched')
+  assert.equal(tier.update({ ...awake, battery: 36 }), 'L3')
+  c.tick(10000)
+  assert.equal(tier.update({ ...awake, battery: 36 }), 'L2', 'released only above l3ExitAbove')
+})
+
+test('charging + MODERATE thermal still goes L0 (heat does not care about the cable)', () => {
+  const c = clock()
+  const tier = new PowerTierController({ config: makeConfig(), now: c.now })
+  const hot = { ...awake, charging: true, thermal: 2 }
+  assert.equal(tier.update(hot), 'L2', 'debounced')
+  c.tick(10000)
+  assert.equal(tier.update(hot), 'L0')
+  assert.equal(tier.update({ ...awake, charging: true, thermal: 0 }), 'L0')
+  c.tick(10000)
+  assert.equal(tier.update({ ...awake, charging: true, thermal: 0 }), 'L2')
+})
+
+test('thermal L0 outranks a manual L2 override', () => {
+  const c = clock()
+  const tier = new PowerTierController({ config: makeConfig(), now: c.now })
+  tier.setForcedMode('L2')
+  const hot = { ...awake, thermal: 3 }
+  assert.equal(tier.update(hot), 'L2')
+  c.tick(10000)
+  assert.equal(tier.update(hot), 'L0', 'safety beats the user preference')
+  assert.equal(tier.forcedMode, 'L2', 'but the preference is remembered')
+  c.tick(10000)
+  assert.equal(tier.update(awake), 'L0', 'the debounce starts when the sensor drops')
+  c.tick(10000)
+  assert.equal(tier.update(awake), 'L2', 'and re-applies once cool')
+})
+
+test('unknown screen state is off, not on', () => {
+  const c = clock()
+  const tier = new PowerTierController({ config: makeConfig(), now: c.now })
+  const unknown = { ...awake, screenOn: false, idle: true }
+  assert.equal(tier.update(unknown), 'L2')
+  c.tick(10000)
+  assert.equal(tier.update(unknown), 'L1')
+})

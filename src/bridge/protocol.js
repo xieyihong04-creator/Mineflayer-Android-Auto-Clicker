@@ -18,9 +18,12 @@ class ProtocolError extends Error {
   }
 }
 
-// `disconnect` / `waypoint` are additive v1 extensions (no field changes),
-// needed by F8 and P1; the frozen message shapes above are unchanged.
-const DOWN_TYPES = new Set(['cmd', 'goto', 'stop', 'eat', 'toss', 'setMode', 'connect', 'disconnect', 'waypoint', 'config', 'ping'])
+// `disconnect` / `waypoint` / `screen` are additive v1 extensions (no field
+// changes), needed by F8, P1 and the event-based screen authority. The frozen
+// message shapes above are unchanged, and `hello` now carries `protoVersion`
+// so an M2 app can detect a version mismatch on handshake.
+const DOWN_TYPES = new Set(['cmd', 'goto', 'stop', 'eat', 'toss', 'setMode', 'connect', 'disconnect', 'waypoint', 'screen', 'config', 'ping'])
+const PROTO_VERSION = 1
 const UP_TYPES = new Set(['state', 'chat', 'inv', 'nav', 'mode', 'log', 'hello', 'error', 'notify', 'auth', 'config'])
 
 function num (value, name, { min = -Infinity, max = Infinity } = {}) {
@@ -93,6 +96,10 @@ function parseDown (raw) {
       return { type, payload: validateConnect(p) }
     case 'disconnect':
       return { type, payload: { reason: p.reason === undefined ? 'user' : str(p.reason, 'disconnect.reason', { max: 64 }) } }
+    case 'screen': {
+      if (typeof p.on !== 'boolean') throw new ProtocolError('screen.on must be a boolean')
+      return { type, payload: { on: p.on } }
+    }
     case 'waypoint': {
       const action = p.action
       if (!['save', 'go', 'delete', 'list'].includes(action)) {
@@ -174,7 +181,7 @@ function logMessage (entry) {
 }
 
 function helloMessage (payload) {
-  return { t: 'hello', protocol: 1, ...payload }
+  return { t: 'hello', protocol: PROTO_VERSION, protoVersion: PROTO_VERSION, ...payload }
 }
 
 function errorMessage (message, code = 'error') {
@@ -192,6 +199,7 @@ function round2 (n) {
 module.exports = {
   DOWN_TYPES,
   UP_TYPES,
+  PROTO_VERSION,
   ProtocolError,
   parseDown,
   stateMessage,

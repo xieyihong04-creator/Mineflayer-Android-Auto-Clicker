@@ -74,8 +74,32 @@ class Navigator {
     return true
   }
 
-  async goto (x, y, z, range, { reason = 'goto' } = {}) {
+  /**
+   * Synchronous reachability probe used before walking to a drop point.
+   * `getPathTo` blocks the event loop, so keep the timeout small and only call
+   * it for explicit pre-flight checks (drop point setup / cleanup start).
+   */
+  precheck (x, y, z, { timeoutMs = 2000 } = {}) {
     const bot = this.getBot()
+    if (!bot || !bot.entity || !bot.pathfinder || !bot.registry) return { ok: true, checked: false }
+    if (typeof bot.pathfinder.getPathTo !== 'function') return { ok: true, checked: false }
+    try {
+      this.configureMovements(bot)
+      const { goals } = this.factory()
+      const movements = bot.pathfinder.movements
+      if (!movements) return { ok: true, checked: false }
+      const result = bot.pathfinder.getPathTo(movements, new goals.GoalNear(x, y, z, 0), timeoutMs)
+      const status = result && result.status
+      const ok = Boolean(result && status === 'success' && Array.isArray(result.path) && result.path.length > 0)
+      return { ok, checked: true, status }
+    } catch (err) {
+      // pathfinder internals changed / world not ready: do not block cleanup.
+      this.logger && this.logger.warn(`path precheck failed: ${err.message}`)
+      return { ok: true, checked: false, error: err.message }
+    }
+  }
+
+  async goto (x, y, z, range, { reason = 'goto' } = {}) {    const bot = this.getBot()
     if (!bot || !bot.entity) throw new Error('bot is not in a world')
     for (const [name, value] of Object.entries({ x, y, z })) {
       if (!Number.isFinite(value)) throw new Error(`${name} must be a finite number`)

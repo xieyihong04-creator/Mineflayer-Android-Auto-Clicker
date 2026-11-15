@@ -8,8 +8,10 @@ const {
   parseDown,
   ProtocolError,
   helloMessage,
-  errorMessage
+  errorMessage,
+  PROTO_VERSION
 } = require('./protocol')
+const { normalize } = require('../config')
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -81,7 +83,8 @@ class BridgeServer {
         ok: true,
         status: this.manager.status,
         mode: this.manager.tier.mode,
-        clients: this.clients.size
+        clients: this.clients.size,
+        protoVersion: PROTO_VERSION
       })
       res.writeHead(200, { 'content-type': MIME['.json'] })
       res.end(body)
@@ -113,6 +116,7 @@ class BridgeServer {
 
   handleClient (ws) {
     this.clients.add(ws)
+    this.manager.setUiClients(this.clients.size)
     const hello = helloMessage(this.manager.helloPayload())
     this.send(ws, hello)
     this.logger.info(`ui client connected (${this.clients.size} total)`)
@@ -122,12 +126,12 @@ class BridgeServer {
         this.send(ws, errorMessage(err.message, 'internal'))
       })
     })
-    ws.on('close', () => {
-      this.clients.delete(ws)
-    })
-    ws.on('error', () => {
-      this.clients.delete(ws)
-    })
+    const drop = () => {
+      if (!this.clients.delete(ws)) return
+      this.manager.setUiClients(this.clients.size)
+    }
+    ws.on('close', drop)
+    ws.on('error', drop)
   }
 
   async onMessage (ws, raw) {
@@ -141,7 +145,7 @@ class BridgeServer {
     const id = parsed && parsed.id
     try {
       const { type, payload } = parseDown(parsed)
-      const result = await this.dispatch(type, payload)
+      const result = await this.dispatch(type, payload, ws)
       if (result && result.ok === false && result.reason && id !== undefined) {
         this.send(ws, { t: 'ack', id, ok: false, error: String(result.reason) })
         this.send(ws, { t: 'error', code: 'command', msg: String(result.reason) })
@@ -159,7 +163,7 @@ class BridgeServer {
     }
   }
 
-  async dispatch (type, payload) {
+  async dispatch (type, payload, ws = null) {
     switch (type) {
       case 'cmd':
         return this.manager.sendChat(payload.text)
@@ -194,6 +198,8 @@ class BridgeServer {
       case 'disconnect':
         this.manager.disconnect({ reason: payload.reason })
         return { ok: true }
+      case 'screen':
+        return { ok: true, mode: this.manager.reportScreen(payload.on) }
       case 'waypoint': {
         if (payload.action === 'save') return this.manager.saveWaypoint(payload.name)
         if (payload.action === 'go') return this.manager.goWaypoint(payload.name)
@@ -206,6 +212,19 @@ class BridgeServer {
           return { ok: true }
         }
         if (payload.action === 'set') {
+          if (payload.patch && payload.patch.inv && payload.patch.inv.dropPoint) {
+            const merged = normalize(payload.patch, this.configStore.config)
+            if (merged.errors.length) throw new Error(merged.errors.join('; '))
+            // Refuse a drop point that would walk the bot into lava or that is
+            // unreachable, instead of failing silently 30s into the walk.
+            const check = this.manager.checkDropPoint(merged.config.inv.dropPoint)
+            if (!check.ok) throw new Error(`丢弃点不可用: ${check.reason}`)
+            if (!check.checked) this.send(ws, { t: 'notify', level: 'warn', msg: 'bot 未在线，丢弃点仅保存未校验' })
+            this.configStore.save(payload.patch)
+            this.manager.applyConfig()
+            this.sendAll({ t: 'config', action: 'set', config: this.configStore.config })
+            return { ok: true, dropPoint: check }
+          }
           this.configStore.save(payload.patch)
           this.manager.applyConfig()
           this.sendAll({ t: 'config', action: 'set', config: this.configStore.config })

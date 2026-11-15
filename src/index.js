@@ -28,7 +28,7 @@ async function main () {
     fileEnabled: config.power.logToFile,
     mirrorConsole: process.env.MCBOT_QUIET !== '1'
   })
-  logger.info(`starting mineflayer-android-auto-clicker v0.1 (node ${process.version})`)
+  logger.info(`starting mineflayer-android-console v0.1 (node ${process.version})`)
 
   const tier = new PowerTierController({ config })
   const manager = new BotManager({ configStore, logger, tier })

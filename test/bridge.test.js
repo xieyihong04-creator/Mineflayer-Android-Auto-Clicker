@@ -208,3 +208,44 @@ test('bridge: config get/set round trip', async (t) => {
   const bad = await client.wait((m) => m.t === 'ack' && m.id === 6)
   assert.equal(bad.ok, false)
 })
+
+test('bridge: hello carries protoVersion and health reports it', async (t) => {
+  const { client, server } = await setup(t)
+  const hello = await client.wait((m) => m.t === 'hello')
+  assert.equal(hello.protoVersion, 1)
+  const health = JSON.parse((await httpGet(server.port, '/api/health')).body)
+  assert.equal(health.protoVersion, 1)
+  assert.equal(health.clients, 1)
+})
+
+test('bridge: screen visibility reports are accepted and drive the tier', async (t) => {
+  const { client, ws, manager } = await setup(t)
+  await client.wait((m) => m.t === 'hello')
+  assert.equal(manager.uiClients, 1)
+
+  ws.send(JSON.stringify({ t: 'screen', on: true, id: 11 }))
+  const ack = await client.wait((m) => m.t === 'ack' && m.id === 11)
+  assert.equal(ack.ok, true)
+  assert.equal(manager.tier.lastSignals.screenOn, true)
+  assert.equal(manager.tier.lastSignals.screenSource, 'ui')
+
+  ws.send(JSON.stringify({ t: 'screen', on: false, id: 12 }))
+  await client.wait((m) => m.t === 'ack' && m.id === 12)
+  assert.equal(manager.tier.lastSignals.screenOn, false)
+
+  ws.send(JSON.stringify({ t: 'screen', on: 'nope', id: 13 }))
+  const bad = await client.wait((m) => m.t === 'ack' && m.id === 13)
+  assert.equal(bad.ok, false)
+})
+
+test('bridge: closing the last socket returns the screen authority to "no client"', async (t) => {
+  const { client, ws, manager } = await setup(t)
+  await client.wait((m) => m.t === 'hello')
+  ws.send(JSON.stringify({ t: 'screen', on: true, id: 21 }))
+  await client.wait((m) => m.t === 'ack' && m.id === 21)
+  assert.equal(manager.tier.lastSignals.screenOn, true)
+  ws.close()
+  await new Promise((resolve) => setTimeout(resolve, 150))
+  assert.equal(manager.uiClients, 0)
+  assert.equal(manager.screen.reported, null)
+})

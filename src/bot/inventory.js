@@ -1,6 +1,7 @@
 'use strict'
 
 const { emptySlotCount, snapshotInventory, selectTossable } = require('./items')
+const { validateDropPoint: defaultValidate } = require('./droppoint')
 
 const sleep = (ms) => new Promise((resolve) => {
   const t = setTimeout(resolve, ms)
@@ -18,7 +19,7 @@ const sleep = (ms) => new Promise((resolve) => {
  * Paused in L0 (PRD §4) and refuses to run without a configured drop point.
  */
 class InventoryManager {
-  constructor ({ getBot, config, logger, notify = () => {}, nav, getMode = () => 'L2', emit = () => {}, sleepFn = sleep, now = () => Date.now() }) {
+  constructor ({ getBot, config, logger, notify = () => {}, nav, getMode = () => 'L2', emit = () => {}, sleepFn = sleep, now = () => Date.now(), validateDropPoint = defaultValidate }) {
     this.getBot = getBot
     this.config = config
     this.logger = logger
@@ -28,6 +29,7 @@ class InventoryManager {
     this.emit = emit
     this.sleep = sleepFn
     this.now = now
+    this.validateDropPoint = validateDropPoint
     this.timer = null
     this.busy = false
     this.attached = new WeakSet()
@@ -102,7 +104,28 @@ class InventoryManager {
     this.lastReason = reason
     this.logger && this.logger.info(`cleanup start (${reason}) -> ${dp.type} ${dp.x},${dp.y},${dp.z}`)
     try {
-      await this.nav.goto(dp.x, dp.y, dp.z, 2, { reason: 'cleanup' })
+      // Pre-flight: a bad drop point must fail loudly here, not as a 30s nav
+      // timeout that leaves the farm silently full. Also picks a standing block
+      // that is provably not lava instead of "somewhere within 2 blocks".
+      const target = { x: dp.x, y: dp.y, z: dp.z }
+      let range = 2
+      if (dp.validate) {
+        const check = this.validateDropPoint({ bot, point: dp, nav: this.nav })
+        if (!check.ok) {
+          const why = `${check.reason}`
+          this.logger && this.logger.warn(`cleanup aborted: drop point unusable (${why})`)
+          this.notify('warn', `丢弃点不可用（${why}），已跳过本次清包`)
+          return { ok: false, reason: `drop_point_${why}` }
+        }
+        if (check.standing) {
+          target.x = check.standing.x
+          target.y = check.standing.y
+          target.z = check.standing.z
+          range = 0
+        }
+      }
+
+      await this.nav.goto(target.x, target.y, target.z, range, { reason: 'cleanup' })
 
       const items = selectTossable(bot.inventory.items(), this.config)
       if (items.length === 0) {

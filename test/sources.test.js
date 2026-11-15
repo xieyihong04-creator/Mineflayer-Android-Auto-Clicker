@@ -22,7 +22,9 @@ test('mock signals are used when MCBOT_MOCK_POWER is set (desktop / tests)', asy
     battery: 18,
     charging: true,
     thermal: 2,
-    screenOn: false,
+    // Screen state is an event, not a sensor read; the mock value is only a
+    // desktop hint for headless runs.
+    screenHint: false,
     powerSave: true,
     source: 'mock'
   })
@@ -53,11 +55,11 @@ test('reads battery capacity and charging state from sysfs', async () => {
   assert.equal(signals.charging, true)
   assert.equal(signals.thermalCelsius, 46.5)
   assert.equal(signals.thermal, 2)
-  assert.equal(signals.screenOn, false)
+  assert.equal(signals.screenHint, null, 'screen state never comes from sysfs/dumpsys')
   assert.equal(signals.powerSave, true)
 })
 
-test('a broken sysfs does not throw; battery becomes null and screen defaults to on', async () => {
+test('a broken sysfs does not throw; battery becomes null', async () => {
   const fakeFs = {
     readFile: async () => { throw new Error('EACCES') },
     readdir: async () => { throw new Error('EACCES') }
@@ -65,15 +67,16 @@ test('a broken sysfs does not throw; battery becomes null and screen defaults to
   const source = new AndroidSignalSource({ fs: fakeFs, exec: async () => null, env: {} })
   const signals = await source.read()
   assert.equal(signals.battery, null)
-  assert.equal(signals.screenOn, true)
+  assert.equal(signals.screenHint, null)
   assert.equal(signals.powerSave, false)
   assert.equal(signals.thermal, 0)
 })
 
-test('screen override is honoured (manual fallback when dumpsys is unavailable)', async () => {
-  const source = new AndroidSignalSource({ exec: async () => null, env: {} })
-  source.setScreenOverride(false)
-  assert.equal(await source.readScreenOn(), false)
-  source.setScreenOverride(null)
-  assert.equal(await source.readScreenOn(), true)
+test('dumpsys screen probing degrades to null instead of guessing "on"', async () => {
+  const denied = new AndroidSignalSource({ exec: async () => null, env: {} })
+  assert.equal(await denied.readScreenOn(), null)
+  const asleep = new AndroidSignalSource({ exec: async () => 'mWakefulness=Asleep\n', env: {} })
+  assert.equal(await asleep.readScreenOn(), false)
+  const awake = new AndroidSignalSource({ exec: async () => 'mWakefulness=Awake\n', env: {} })
+  assert.equal(await awake.readScreenOn(), true)
 })

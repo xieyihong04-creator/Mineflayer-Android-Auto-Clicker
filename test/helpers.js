@@ -62,6 +62,8 @@ class FakeBot extends EventEmitter {
     this.consume = () => this.consumeImpl()
     this.loadPlugin = () => { this.pluginLoaded = true }
     this.quitCalls = []
+    this.respawnCalls = 0
+    this.respawn = () => { this.respawnCalls += 1 }
     this.quit = (reason) => { this.quitCalls.push(reason); this.emit('end', reason) }
     this.end = () => { this.emit('end', 'ended') }
   }
@@ -97,4 +99,25 @@ const navStub = () => ({
   emit: () => {}
 })
 
-module.exports = { makeConfig, FakeBot, FakePosition, fakeLogger, navStub, makeItem }
+/**
+ * FakeBot with a tiny block world for drop-point validation tests.
+ * `blocks` maps "x,y,z" -> block name; anything missing is air.
+ */
+function makeWorldBot (blocks = {}, { pos = new FakePosition(0, 64, 0) } = {}) {
+  const bot = new FakeBot({ pos })
+  const air = { name: 'air', boundingBox: 'empty', liquid: false }
+  const stone = { name: 'stone', boundingBox: 'block', liquid: false }
+  const lava = { name: 'lava', boundingBox: 'empty', liquid: true }
+  bot.blockAt = ({ x, y, z }) => {
+    const key = `${Math.floor(x)},${Math.floor(y)},${Math.floor(z)}`
+    const name = blocks[key]
+    if (name === 'lava') return lava
+    if (name === 'stone') return stone
+    if (name === 'chest') return { name: 'chest', boundingBox: 'block', liquid: false }
+    if (name === 'water') return { name: 'water', boundingBox: 'empty', liquid: true }
+    return air
+  }
+  return bot
+}
+
+module.exports = { makeConfig, FakeBot, FakePosition, fakeLogger, navStub, makeItem, makeWorldBot }

@@ -5,7 +5,7 @@ const assert = require('node:assert/strict')
 const { InventoryManager } = require('../src/bot/inventory')
 const { FakeBot, FakePosition, makeConfig, fakeLogger } = require('./helpers')
 
-function makeInv ({ configPatch = {}, bot = new FakeBot() } = {}) {
+function makeInv ({ configPatch = {}, bot = new FakeBot(), validateDropPoint = undefined } = {}) {
   const gotos = []
   const events = []
   const gaps = []
@@ -38,7 +38,8 @@ function makeInv ({ configPatch = {}, bot = new FakeBot() } = {}) {
     getMode: () => 'L2',
     emit: (msg) => events.push(msg),
     sleepFn: async (ms) => { gaps.push(ms) },
-    notify: () => {}
+    notify: () => {},
+    ...(validateDropPoint ? { validateDropPoint } : {})
   })
   return { inv, bot, gotos, gaps, events, nav }
 }
@@ -106,6 +107,9 @@ test('F6: container drop point deposits instead of tossing', async () => {
   })
   const { inv } = makeInv({
     bot,
+    // This fake world answers "chest" for every coordinate, so the standing
+    // spot scan has no meaning here; the container path is what is under test.
+    validateDropPoint: () => ({ ok: true, checked: false }),
     configPatch: { inv: { dropPoint: { set: true, type: 'container', x: 100, y: 64, z: -200 } } }
   })
   const result = await inv.maybeCleanup({ force: true, reason: 'full' })

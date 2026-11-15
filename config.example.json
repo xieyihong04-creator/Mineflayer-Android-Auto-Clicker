@@ -21,10 +21,15 @@
     "battery": {
       "l0Below": 20,
       "l3Below": 10,
+      "l3ExitAbove": 20,
       "l3SkipWhileCharging": true
     },
     "thermal": {
       "l0AtOrAbove": 2
+    },
+    "screen": {
+      "requireClient": true,
+      "reportStaleMs": 600000
     },
     "idleMs": 30000,
     "stateHz": {
@@ -91,8 +96,18 @@
       "type": "lava",
       "x": 0,
       "y": 64,
-      "z": 0
+      "z": 0,
+      "validate": true,
+      "maxStandDistance": 3
     }
+  },
+  "respawn": {
+    "enabled": true,
+    "maxConsecutive": 3,
+    "windowMs": 600000,
+    "delayMs": 2000,
+    "returnToWaypoint": true,
+    "waypoint": "afk"
   },
   "nav": {
     "timeoutMs": 30000,

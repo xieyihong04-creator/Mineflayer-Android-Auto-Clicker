@@ -29,11 +29,16 @@ function thermalStatusFromCelsius (celsius) {
 }
 
 /**
- * Reads battery/thermal/screen/power-save signals from a Termux shell.
+ * Reads battery/thermal/power-save signals for a Termux shell.
  *
  * M1 runs in Termux where BatteryManager/getCurrentThermalStatus do not exist,
- * so we read sysfs and dumpsys. Every read is best-effort: a failure yields
- * `null`/safe defaults instead of throwing.
+ * so we read sysfs. Every read is best-effort: a failure yields `null`/safe
+ * defaults instead of throwing.
+ *
+ * Screen state is deliberately NOT read here: `dumpsys power` needs the DUMP
+ * permission that a normal app uid does not have, so its answer is unavailable
+ * exactly when it matters. The UI reports visibility instead (see screen.js);
+ * `screenHint` is only the MCBOT_MOCK_POWER override for desktop testing.
  */
 class AndroidSignalSource {
   constructor ({ fs = fsp, exec = execFileAsync, env = process.env, batteryDirs = BATTERY_DIRS } = {}) {
@@ -41,8 +46,6 @@ class AndroidSignalSource {
     this.exec = exec
     this.env = env
     this.batteryDirs = batteryDirs
-    this.screenOnOverride = null
-    this.lastScreenOn = true
     this.lastReadAt = 0
   }
 
@@ -90,29 +93,22 @@ class AndroidSignalSource {
   }
 
   async readScreenOn () {
-    if (this.screenOnOverride !== null) return this.screenOnOverride
+    // Kept only as an explicit diagnostic: Termux usually has no DUMP access.
     const out = await this.exec('dumpsys', ['power'])
-    if (!out) return this.lastScreenOn
+    if (!out) return null
     const wakefulness = /mWakefulness=(\w+)/.exec(out)
-    if (wakefulness) {
-      this.lastScreenOn = wakefulness[1] === 'Awake'
-      return this.lastScreenOn
-    }
+    if (wakefulness) return wakefulness[1] === 'Awake'
     if (/mScreenOn=true/.test(out)) return true
     if (/mScreenOn=false/.test(out)) return false
     const display = /Display Power: state=(\w+)/.exec(out)
     if (display) return display[1] === 'ON'
-    return this.lastScreenOn
+    return null
   }
 
   async readPowerSave () {
     const out = await this.exec('settings', ['get', 'global', 'low_power'])
     if (!out) return false
     return out.trim() === '1'
-  }
-
-  setScreenOverride (on) {
-    this.screenOnOverride = on === null ? null : Boolean(on)
   }
 
   async read () {
@@ -123,16 +119,16 @@ class AndroidSignalSource {
         battery: Number.isFinite(mock.battery) ? mock.battery : null,
         charging: Boolean(mock.charging),
         thermal: Number.isFinite(mock.thermal) ? mock.thermal : (Number.isFinite(mock.thermalCelsius) ? thermalStatusFromCelsius(mock.thermalCelsius) : 0),
-        screenOn: mock.screenOn !== undefined ? Boolean(mock.screenOn) : true,
+        // Desktop hint only; the manager still prefers real UI reports.
+        screenHint: mock.screenOn === undefined ? null : Boolean(mock.screenOn),
         powerSave: Boolean(mock.powerSave),
         source: 'mock'
       }
     }
 
-    const [battery, thermal, screenOn, powerSave] = await Promise.all([
+    const [battery, thermal, powerSave] = await Promise.all([
       this.readBattery(),
       this.readThermal(),
-      this.readScreenOn(),
       this.readPowerSave()
     ])
     this.lastReadAt = Date.now()
@@ -141,7 +137,7 @@ class AndroidSignalSource {
       charging: battery.charging,
       thermal: thermal.status,
       thermalCelsius: thermal.celsius,
-      screenOn,
+      screenHint: null,
       powerSave,
       source: 'android'
     }

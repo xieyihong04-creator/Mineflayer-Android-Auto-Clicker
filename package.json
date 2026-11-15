@@ -1,8 +1,8 @@
 {
-  "name": "mineflayer-android-auto-clicker",
+  "name": "mineflayer-android-console",
   "version": "0.1.0",
   "private": true,
-  "description": "Android/Termux Minecraft Java AFK bot console (mineflayer core + WebSocket bridge + web UI)",
+  "description": "Mineflayer Android AFK console (M1: Termux Node service + localhost WebSocket + web UI)",
   "main": "src/index.js",
   "engines": {
     "node": ">=18"

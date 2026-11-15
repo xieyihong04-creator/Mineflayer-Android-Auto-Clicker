@@ -63,6 +63,7 @@ const els = {
 }
 
 const CHAT_LIMIT = 200
+const PROTO_VERSION = 1
 const state = {
   ws: null,
   connected: false,
@@ -128,6 +129,7 @@ function connectWs () {
     state.connected = true
     state.reconnectDelay = 500
     renderConn()
+    reportVisibility()
   })
 
   ws.addEventListener('message', (event) => {
@@ -228,6 +230,9 @@ function handleMessage (msg) {
 }
 
 function applyHello (msg) {
+  if (msg.protoVersion !== undefined && msg.protoVersion !== PROTO_VERSION) {
+    toast(`协议版本不匹配：服务端 v${msg.protoVersion}，页面 v${PROTO_VERSION}`, 'warn', 8000)
+  }
   if (msg.status) {
     state.status = msg.status.status || state.status
     renderStatus()
@@ -289,7 +294,8 @@ function renderSignals () {
   els.pBattery.textContent = s.battery == null ? '--' : `${s.battery}%`
   els.pCharging.textContent = s.charging ? '是' : '否'
   els.pThermal.textContent = s.thermal == null ? '--' : `T${s.thermal}`
-  els.pScreen.textContent = s.screenOn ? '亮' : '灭'
+  const screenMap = { ui: 'UI 上报', no_client: '无观察者', unknown: '未知→按灭', fallback: '模拟' }
+  els.pScreen.textContent = `${s.screenOn ? '亮' : '灭'}（${screenMap[s.screenSource] || s.screenSource || '--'}）`
   els.pSaver.textContent = s.powerSave ? '开' : '关'
   els.powerSrc.textContent = s.source === 'mock' ? '模拟信号' : 'Android 信号'
 }
@@ -300,11 +306,12 @@ function renderStatus () {
     connecting: '连接中',
     reconnecting: '重连中',
     offline: '离线',
-    suspended: 'L3 已断开'
+    suspended: 'L3 已断开',
+    halted: '已停机（熔断）'
   }
   const text = map[state.status] || state.status
   els.connText.textContent = text
-  els.connDot.className = `dot ${state.status === 'online' ? 'online' : state.status === 'offline' || state.status === 'suspended' ? 'offline' : 'connecting'}`
+  els.connDot.className = `dot ${state.status === 'online' ? 'online' : state.status === 'offline' || state.status === 'suspended' || state.status === 'halted' ? 'offline' : 'connecting'}`
   const detail = []
   if (state.lastState && state.lastState.extra) {
     if (state.lastState.extra.status) detail.push(state.lastState.extra.status)
@@ -564,6 +571,17 @@ setInterval(() => {
     els.uptime.textContent = fmtUptime((state.lastState.online || 0) + extra)
   }
 }, 1000)
+
+// M1 screen authority: the page tells the core whether the phone screen is on.
+// `visibilitychange` fires on lock/background; unknown always degrades to off.
+function reportVisibility () {
+  const on = !document.hidden
+  state.screenOn = on
+  if (state.ws && state.ws.readyState === 1) {
+    state.ws.send(JSON.stringify({ t: 'screen', on }))
+  }
+}
+document.addEventListener('visibilitychange', reportVisibility)
 
 renderConn()
 function renderConn () {

@@ -92,3 +92,37 @@ test('empty defaults are usable for tests', () => {
   assert.equal(DEFAULTS.server.port, 25565)
   assert.equal(DEFAULTS.auth.type, 'microsoft')
 })
+
+test('L3 hysteresis defaults to 10% in / 20% out and rejects a reversed band', () => {
+  const ok = normalize({})
+  assert.equal(ok.config.power.battery.l3Below, 10)
+  assert.equal(ok.config.power.battery.l3ExitAbove, 20)
+
+  const bad = normalize({ power: { battery: { l3Below: 15, l3ExitAbove: 15 } } })
+  assert.ok(bad.errors.some((e) => /l3ExitAbove/.test(e)))
+  assert.ok(bad.config.power.battery.l3ExitAbove > bad.config.power.battery.l3Below)
+})
+
+test('screen authority config: client required, reports go stale after 10 minutes', () => {
+  const { config } = normalize({})
+  assert.equal(config.power.screen.requireClient, true)
+  assert.equal(config.power.screen.reportStaleMs, 600000)
+  const clamped = normalize({ power: { screen: { reportStaleMs: 1 } } })
+  assert.equal(clamped.config.power.screen.reportStaleMs, 10000)
+})
+
+test('F9 respawn defaults: 3 consecutive deaths, 10 minute window, return to "afk"', () => {
+  const { config } = normalize({})
+  assert.equal(config.respawn.enabled, true)
+  assert.equal(config.respawn.maxConsecutive, 3)
+  assert.equal(config.respawn.windowMs, 600000)
+  assert.equal(config.respawn.returnToWaypoint, true)
+  assert.equal(config.respawn.waypoint, 'afk')
+})
+
+test('drop point validation is on by default and can be disabled', () => {
+  const { config } = normalize({})
+  assert.equal(config.inv.dropPoint.validate, true)
+  assert.equal(config.inv.dropPoint.maxStandDistance, 3)
+  assert.equal(normalize({ inv: { dropPoint: { validate: false } } }).config.inv.dropPoint.validate, false)
+})

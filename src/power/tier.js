@@ -7,11 +7,15 @@ const RANK = { L2: 3, L1: 2, L0: 1, L3: 0 }
  * F7 / PRD §4 power tier state machine.
  *
  * Rules, in priority order:
- *   1. L3  battery < 10% (unless charging) -> immediate, latched, no debounce
- *   2. manual forced tier (UI "强制 L2")  -> immediate
- *   3. L0  battery < 20% / thermal >= MODERATE / power-save
- *   4. L1  screen off && not navigating && idle for >= idleMs
- *   5. L2  everything else (screen on, navigating, or moving)
+ *   1. L3  battery < 10% (unless charging) -> immediate, latched, no debounce.
+ *          Leaves L3 only when charging or battery >= l3ExitAbove (20%),
+ *          never at the entry threshold: that is the hysteresis.
+ *   2. L0  thermal >= MODERATE / power-save. Hardware safety beats a manual
+ *          override: a hot phone must back off even if the user pinned L2.
+ *   3. manual forced tier (UI "强制 L2")  -> immediate
+ *   4. L0  battery < 20%
+ *   5. L1  screen off && not navigating && idle for >= idleMs
+ *   6. L2  everything else (screen on, navigating, or moving)
  *
  * Every automatic switch is debounced (>= 10s) so a flickering sensor cannot
  * bounce the tier. L3 and manual overrides bypass the debounce.
@@ -31,7 +35,8 @@ class PowerTierController {
       battery: null,
       charging: false,
       thermal: 0,
-      screenOn: true,
+      screenOn: false, // fail-safe: no observer yet
+      screenSource: 'unknown',
       navActive: false,
       idle: false,
       powerSave: false
@@ -45,7 +50,7 @@ class PowerTierController {
     const skipL3 = charging && p.battery.l3SkipWhileCharging
 
     if (this.l3Latched) {
-      const recovered = charging || (battery !== null && battery >= p.battery.l0Below)
+      const recovered = charging || (battery !== null && battery >= p.battery.l3ExitAbove)
       if (!recovered) return 'L3'
       this.l3Latched = false
     }
@@ -54,11 +59,13 @@ class PowerTierController {
       return 'L3'
     }
 
+    // Heat and battery-saver are hardware constraints, not user preferences.
+    if (Number(signals.thermal) >= p.thermal.l0AtOrAbove) return 'L0'
+    if (signals.powerSave) return 'L0'
+
     if (this.forcedMode) return this.forcedMode
 
     if (battery !== null && battery < p.battery.l0Below) return 'L0'
-    if (Number(signals.thermal) >= p.thermal.l0AtOrAbove) return 'L0'
-    if (signals.powerSave) return 'L0'
 
     if (!signals.screenOn && !signals.navActive && signals.idle) return 'L1'
 

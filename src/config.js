@@ -28,12 +28,22 @@ const DEFAULTS = {
     battery: {
       l0Below: 20,
       l3Below: 10,
+      // Hysteresis: enter L3 below l3Below, leave it only above l3ExitAbove,
+      // otherwise 9% <-> 11% would flap the radio on and off all night.
+      l3ExitAbove: 20,
       // If the phone is charging, the <10% disconnect rule is skipped.
       l3SkipWhileCharging: true
     },
     thermal: {
       // Android THERMAL_STATUS_MODERATE = 2
       l0AtOrAbove: 2
+    },
+    // Screen state is reported by the UI (Page Visibility API in M1,
+    // ACTION_SCREEN_ON/OFF in M2). Querying the system from Termux needs DUMP
+    // (privileged), so it is NOT the authority. Fail-safe is always "off".
+    screen: {
+      requireClient: true,
+      reportStaleMs: 600000
     },
     idleMs: 30000,
     // State push rate in Hz per tier. L0 is documented as "stop" in the PRD,
@@ -94,8 +104,25 @@ const DEFAULTS = {
       type: 'lava',
       x: 0,
       y: 64,
-      z: 0
+      z: 0,
+      // Before walking there, verify the destination is loaded, the block is a
+      // real lava/container, a safe standing spot exists nearby and it is
+      // reachable. Without this a bad point means "walk into lava" or a silent
+      // 30s nav timeout on every cleanup.
+      validate: true,
+      maxStandDistance: 3
     }
+  },
+  respawn: {
+    // F9: death -> respawn -> walk back to the AFK waypoint.
+    enabled: true,
+    // Stop instead of feeding a death loop (eaten out of food is the classic).
+    maxConsecutive: 3,
+    // Deaths older than this do not count towards the consecutive limit.
+    windowMs: 600000,
+    delayMs: 2000,
+    returnToWaypoint: true,
+    waypoint: 'afk'
   },
   nav: {
     timeoutMs: 30000,
@@ -196,7 +223,14 @@ function normalize (input, base = DEFAULTS) {
     errors.push('power.battery.l3Below must be < power.battery.l0Below')
     p.battery.l3Below = Math.max(0, p.battery.l0Below - 1)
   }
+  p.battery.l3ExitAbove = clamp(Number(p.battery.l3ExitAbove) || p.battery.l0Below, 1, 100)
+  if (p.battery.l3ExitAbove <= p.battery.l3Below) {
+    errors.push('power.battery.l3ExitAbove must be > power.battery.l3Below (L3 needs hysteresis)')
+    p.battery.l3ExitAbove = Math.min(100, p.battery.l3Below + 1)
+  }
   p.thermal.l0AtOrAbove = clamp(Number(p.thermal.l0AtOrAbove) || 2, 0, 6)
+  p.screen.requireClient = p.screen.requireClient !== false
+  p.screen.reportStaleMs = clamp(Number(p.screen.reportStaleMs) || 600000, 10000, 3600000)
   p.idleMs = clamp(Number(p.idleMs) || 30000, 5000, 3600000)
   for (const tier of ['L2', 'L1', 'L0']) {
     const hz = Number(p.stateHz[tier])
@@ -228,6 +262,8 @@ function normalize (input, base = DEFAULTS) {
     inv.dropPoint.type = 'lava'
   }
   inv.dropPoint.set = Boolean(inv.dropPoint.set)
+  inv.dropPoint.validate = inv.dropPoint.validate !== false
+  inv.dropPoint.maxStandDistance = clamp(Number(inv.dropPoint.maxStandDistance) || 3, 1, 8)
   for (const axis of ['x', 'y', 'z']) {
     const n = Number(inv.dropPoint[axis])
     if (!Number.isFinite(n)) {
@@ -237,6 +273,14 @@ function normalize (input, base = DEFAULTS) {
       inv.dropPoint[axis] = n
     }
   }
+
+  const rs = cfg.respawn
+  rs.enabled = rs.enabled !== false
+  rs.maxConsecutive = clamp(Number(rs.maxConsecutive) || 3, 1, 100)
+  rs.windowMs = clamp(Number(rs.windowMs) || 600000, 10000, 86400000)
+  rs.delayMs = clamp(Number(rs.delayMs) || 2000, 0, 60000)
+  rs.returnToWaypoint = rs.returnToWaypoint !== false
+  rs.waypoint = typeof rs.waypoint === 'string' ? rs.waypoint.slice(0, 32) : 'afk'
 
   const nav = cfg.nav
   nav.timeoutMs = clamp(Number(nav.timeoutMs) || 30000, 1000, 300000)

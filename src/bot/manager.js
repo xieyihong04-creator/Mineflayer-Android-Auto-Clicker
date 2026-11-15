@@ -9,8 +9,11 @@ const { Navigator } = require('./nav')
 const { AutoEater } = require('./eating')
 const { InventoryManager } = require('./inventory')
 const { AfkKeeper } = require('./afk')
+const { RespawnGuard } = require('./respawn')
+const { validateDropPoint } = require('./droppoint')
 const { emptySlotCount, snapshotInventory } = require('./items')
 const { NetworkWatcher } = require('../util/network')
+const { ScreenStateTracker } = require('../power/screen')
 const {
   stateMessage,
   modeMessage,
@@ -25,7 +28,7 @@ const VIEW_DISTANCE = {
 }
 
 class BotManager extends EventEmitter {
-  constructor ({ configStore, logger, tier, createBot = mineflayer.createBot, now = () => Date.now(), networkWatcher = null, nav = null }) {
+  constructor ({ configStore, logger, tier, createBot = mineflayer.createBot, now = () => Date.now(), networkWatcher = null, nav = null, screen = null }) {
     super()
     this.configStore = configStore
     this.logger = logger
@@ -33,9 +36,11 @@ class BotManager extends EventEmitter {
     this.createBot = createBot
     this.now = now
     this.bot = null
-    this.status = 'offline' // offline | connecting | online | reconnecting | suspended
+    this.status = 'offline' // offline | connecting | online | reconnecting | suspended | halted
     this.desiredOnline = false
     this.suspended = false
+    this.halted = false
+    this.haltReason = null
     this.onlineSince = 0
     this.lastError = null
     this.attempts = 0
@@ -46,9 +51,16 @@ class BotManager extends EventEmitter {
     this.lastPos = null
     this.lastMoveAt = now()
     this.lastConnectOptions = null
+    this.lastSignals = { battery: null, charging: false, thermal: 0, powerSave: false }
+    this.uiClients = 0
+    this.returnAfterReconnect = false
     this.backoff = new Backoff({
       baseMs: configStore.config.reconnect.baseMs,
       maxMs: configStore.config.reconnect.maxMs
+    })
+    this.screen = screen || new ScreenStateTracker({
+      getConfig: () => this.config,
+      now
     })
     this.chat = new ChatStore({ limit: configStore.config.power.chatLimit, maxLimit: 2000 })
     this.nav = nav || new Navigator({
@@ -79,6 +91,14 @@ class BotManager extends EventEmitter {
       config: this.config,
       logger,
       getMode: () => this.tier.mode
+    })
+    this.respawn = new RespawnGuard({
+      getBot: () => this.bot,
+      getConfig: () => this.config,
+      logger,
+      notify: (level, msg) => this.notify(level, msg),
+      onHalt: (reason, deaths) => this.halt(reason, `连续死亡 ${deaths} 次，已停机`),
+      now
     })
     this.networkWatcher = networkWatcher || new NetworkWatcher({
       onChange: () => this.onNetworkChange()
@@ -147,6 +167,12 @@ class BotManager extends EventEmitter {
 
     this.desiredOnline = true
     this.suspended = false
+    if (this.halted) {
+      this.halted = false
+      this.haltReason = null
+      this.respawn.reset()
+      this.logger.info('halt cleared by manual connect')
+    }
     this.lastConnectOptions = merged
     this.clearReconnectTimer()
     if (this.bot) {
@@ -211,8 +237,15 @@ class BotManager extends EventEmitter {
       this.backoff.reset()
       this.setStatus('online')
       this.logger.info('spawned: bot is online')
-      this.emit('message', stateMessage(this.buildState()))
+      this.emitState()
       this.emitInventory()
+      // F9: after a death or a reconnect the bot is standing at the world spawn;
+      // walking back to the AFK waypoint is what makes 挂机 actually resume.
+      const fromDeath = this.respawn.consumeReturnRequest()
+      if (fromDeath || this.returnAfterReconnect) {
+        this.returnAfterReconnect = false
+        this.returnToWaypoint(fromDeath ? 'respawn' : 'reconnect')
+      }
     })
 
     bot.on('end', (reason) => {
@@ -222,8 +255,12 @@ class BotManager extends EventEmitter {
       this.onlineSince = 0
       this.bot = null
       this.setStatus('offline')
-      if (wasOnline) this.emit('message', stateMessage(this.buildState()))
-      if (this.desiredOnline && !this.suspended) this.scheduleReconnect('end')
+      if (wasOnline) {
+        this.emitState()
+        // A server restart / kick drops us at the world spawn on reconnect.
+        this.returnAfterReconnect = this.config.respawn.returnToWaypoint
+      }
+      if (this.desiredOnline && !this.suspended && !this.halted) this.scheduleReconnect('end')
     })
 
     bot.on('error', (err) => {
@@ -243,12 +280,13 @@ class BotManager extends EventEmitter {
     bot.on('death', () => {
       if (!fresh()) return
       this.logger.warn('bot died')
-      this.notify('warn', '角色死亡')
+      // F9 lives in RespawnGuard (respawn + circuit breaker + notify).
+      this.respawn.handleDeath(bot)
     })
 
     bot.on('health', () => {
       if (!fresh()) return
-      this.emit('message', stateMessage(this.buildState({ minimal: this.tier.mode === 'L0' })))
+      this.emitState({ minimal: this.tier.mode === 'L0' })
     })
 
     bot.on('messagestr', (message, position) => {
@@ -272,6 +310,7 @@ class BotManager extends EventEmitter {
     this.nav.setup(bot)
     this.eater.attach(bot)
     this.inventory.attach(bot)
+    this.respawn.attach(bot)
     this.nav.emit = (msg) => this.emit('message', msg)
   }
 
@@ -312,7 +351,7 @@ class BotManager extends EventEmitter {
     }
     this.setStatus('offline')
     this.logger.info(`disconnected (${reason})`)
-    this.emit('message', stateMessage(this.buildState()))
+    this.emitState()
   }
 
   onNetworkChange () {
@@ -345,6 +384,28 @@ class BotManager extends EventEmitter {
     this.emit('status', this.statusSnapshot())
   }
 
+  /** F9 circuit breaker / manual stop: stay down until a human hits connect. */
+  halt (reason, detail) {
+    if (this.halted) return { ok: false, reason: 'already_halted' }
+    this.halted = true
+    this.haltReason = reason
+    this.desiredOnline = false
+    this.clearReconnectTimer()
+    this.logger.warn(`halted: ${reason}`)
+    this.disconnect({ reason: `halt:${reason}`, keepDesired: false })
+    this.setStatus('halted')
+    this.notify('warn', detail || `已停机（${reason}）`)
+    return { ok: true, reason }
+  }
+
+  resume () {
+    if (!this.halted) return { ok: false, reason: 'not_halted' }
+    this.halted = false
+    this.haltReason = null
+    this.respawn.reset()
+    return this.connect(this.lastConnectOptions || {})
+  }
+
   statusSnapshot () {
     return {
       status: this.status,
@@ -356,20 +417,56 @@ class BotManager extends EventEmitter {
         ? `${this.lastConnectOptions.host}:${this.lastConnectOptions.port}`
         : this.config.server.host ? `${this.config.server.host}:${this.config.server.port}` : null,
       suspended: this.suspended,
-      desiredOnline: this.desiredOnline
+      halted: this.halted,
+      haltReason: this.haltReason,
+      desiredOnline: this.desiredOnline,
+      uiClients: this.uiClients,
+      screen: this.screen.snapshot(),
+      respawn: this.respawn.snapshot()
     }
   }
 
   // ------------------------------------------------------------ power tiers
 
-  /** Called by the power loop every few seconds. */
+  /** Called by the power loop every few seconds with raw sensor values. */
   updatePower (signals) {
+    this.lastSignals = { ...signals }
+    return this.refreshPower()
+  }
+
+  /**
+   * Recomputes the tier from the last sensors + the screen authority + bot
+   * activity. Cheap, so it also runs when the UI connects/disconnects or the
+   * page visibility changes (where waiting for the next poll would lag).
+   */
+  refreshPower () {
+    const screen = this.screen.evaluate({
+      clientCount: this.uiClients,
+      fallback: this.lastSignals.screenHint
+    })
     const next = this.tier.update({
-      ...signals,
+      ...this.lastSignals,
+      screenOn: screen.on,
+      screenSource: screen.source,
       navActive: this.nav.active,
       idle: this.isIdle()
     })
     return next
+  }
+
+  /** Bridge tells us how many UI sockets are open. 0 observers => screen off. */
+  setUiClients (count) {
+    this.uiClients = Math.max(0, Number(count) || 0)
+    this.screen.setClients(this.uiClients)
+    this.refreshPower()
+    this.restartStateLoop(this.tier.mode)
+    this.emit('status', this.statusSnapshot())
+  }
+
+  /** `{"t":"screen","on":false}` from the page Visibility API. */
+  reportScreen (on) {
+    this.screen.report(on)
+    return this.refreshPower()
   }
 
   isIdle () {
@@ -447,7 +544,9 @@ class BotManager extends EventEmitter {
     this.stateIntervalMs = Math.max(50, Math.round(1000 / hz))
     this.stateTimer = setInterval(() => {
       if (!this.bot) return
-      this.emit('message', stateMessage(this.buildState({ minimal: this.tier.mode === 'L0' })))
+      // L0 with no observer: do not serialize state for an empty socket set.
+      if (this.tier.mode === 'L0' && this.uiClients === 0) return
+      this.emitState({ minimal: this.tier.mode === 'L0' })
     }, this.stateIntervalMs)
     if (this.stateTimer.unref) this.stateTimer.unref()
   }
@@ -462,6 +561,15 @@ class BotManager extends EventEmitter {
       this.isIdle()
     }, 1000)
     if (this.idleTimer.unref) this.idleTimer.unref()
+  }
+
+  /**
+   * Single funnel for state pushes. With zero UI clients there is nobody to
+   * read the HUD, so we skip the JSON serialization entirely (verdict #1).
+   */
+  emitState ({ minimal = this.tier.mode === 'L0' } = {}) {
+    if (this.uiClients === 0) return
+    this.emit('message', stateMessage(this.buildState({ minimal })))
   }
 
   buildState ({ minimal = false } = {}) {
@@ -554,7 +662,36 @@ class BotManager extends EventEmitter {
     // Forcing the tier that is already active does not fire onChange, but the
     // UI still needs to see the "forced" badge.
     this.emit('message', modeMessage(this.tier.snapshot))
+    // Thermal / power-save outrank the override: say so instead of silently
+    // ignoring the click.
+    if (mode !== 'auto' && this.tier.mode !== mode) {
+      this.notify('warn', `温度或省电模式限制，当前保持 ${this.tier.mode}`)
+    }
     return { ok: true, mode: this.tier.mode, forced: this.tier.forcedMode }
+  }
+
+  /** Pre-flight for the configured drop point (F6 safety). */
+  checkDropPoint (point = this.config.inv.dropPoint) {
+    return validateDropPoint({ bot: this.bot, point, nav: this.nav })
+  }
+
+  /** F9: walk back to the configured AFK waypoint after a death / reconnect. */
+  async returnToWaypoint (why) {
+    const cfg = this.config.respawn
+    if (!cfg.returnToWaypoint) return
+    const wp = this.config.waypoints[cfg.waypoint]
+    if (!wp) {
+      this.logger.warn(`no waypoint "${cfg.waypoint}" to return to (${why})`)
+      this.notify('warn', `未找到挂机点 "${cfg.waypoint}"，请先在挂机位置保存`)
+      return
+    }
+    try {
+      await this.nav.goto(wp.x, wp.y, wp.z, this.config.nav.range, { reason: `return_${why}` })
+      this.logger.info(`returned to waypoint ${cfg.waypoint} (${why})`)
+    } catch (err) {
+      this.logger.warn(`return to waypoint failed: ${err.message}`)
+      this.notify('warn', `返回挂机点失败：${err.message}`)
+    }
   }
 
   // --------------------------------------------------------------- P1 helpers
@@ -595,6 +732,11 @@ class BotManager extends EventEmitter {
       baseMs: this.config.reconnect.baseMs,
       maxMs: this.config.reconnect.maxMs
     })
+    // ConfigStore.save() swaps the config object; sub-managers hold the old
+    // reference, so a value edited in the UI would otherwise never take effect.
+    for (const sub of [this.nav, this.eater, this.inventory, this.afk]) {
+      if (sub) sub.config = this.config
+    }
     this.chat.setLimit(this.tier.mode === 'L0' ? this.config.power.chatLimitL0 : this.config.power.chatLimit)
     this.inventory.start()
     this.afk.start()
@@ -613,6 +755,7 @@ class BotManager extends EventEmitter {
         ? { items: snapshotInventory(this.bot), empty: emptySlotCount(this.bot) }
         : { items: [], empty: null },
       nav: this.nav.snapshot(),
+      screen: this.screen.snapshot(),
       logs: this.logger ? this.logger.recent(100) : []
     }
   }

@@ -140,6 +140,8 @@ adb shell run-as dev.mcbot.console cat files/logs/crash.log
 - **两个进程的内存都在**：主进程（WebView）+ `:node`（Node + mineflayer）。低内存机型上 `:node` 更容易被回收，靠看门狗自愈。
 - **Doze / OEM 杀后台**：FGS + 电池优化白名单是唯一手段，已在应用内引导；HyperOS 的自启动/后台弹出权限仍需手动给。
 - **功耗增量仍未测量**：本步没有做任何省电优化，也没有 A/B 数据。`<0.5%/h` 依旧是假设。
+- **电量信号在应用内可能整条断掉（本步带出的回退，未修）**：`src/power/sources.js` 的路径是 sysfs → `termux-battery-status`。应用自己的进程（untrusted_app, targetSdk 35）读 `/sys/class/power_supply/*/capacity` 大概率被 SELinux 拒绝，而 App 里没有 Termux:API 可退——结果 `signals.battery.status = unavailable(selinux)`，L3（<10% 主动断开）与 L0（<20% 降档）就都不会触发。探针与本地都无法验证这一点，必须真机看 `/api/health` 的 `power.battery` 是否非 null。
+  修法（下一步，不混在本步里）：沿用 M2 的做法给原生桥**再加一条上行** `battery {level, charging}`（`PowerManager`/`BatteryManager` 或 `ACTION_BATTERY_CHANGED`），`protoVersion` 仍为 1，`sources.js` 的 native 分支优先。注意这是**新增**信号，不改档位状态机。
 
 ---
 

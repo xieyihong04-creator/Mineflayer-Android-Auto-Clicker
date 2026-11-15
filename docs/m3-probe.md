@@ -17,10 +17,10 @@
 | mineflayer 实测（Node 18.20.4） | **能连上并 spawn**，1.20.1 正版服务端，905 ms | 本机 `probe3.js` |
 | 依赖树原生模块 | **0 个**（无 `*.node`、无 `binding.gyp`、无 `gypfile`） | 遍历 98 个包 |
 | `minecraft-data` 体积 | **895 MB**（PC 499 + Bedrock 395） | `du -sh` |
-| 裁剪后（只留 1.20.1 + common） | **1.6 MB** | 同上 |
-| 完整 node 包（含 node_modules） | **41 MB / 5554 个文件** | `bundle-node.sh` |
-| 打进 APK 的 `node.zip` | **7.1 MB** | Gradle `nodeAsset` |
-| 探针 APK（arm64 单 ABI） | **69 MB**（其中 libnode.so 62.4 MB） | `:probe:assembleDebug` |
+| 裁剪后（目标版本 + 最新版本 + 各自 dataPaths 引用 + common） | **23 MB** | 同上 |
+| 完整 node 包（含 node_modules） | **61 MB / 5669 个文件** | `bundle-node.sh` |
+| 打进 APK 的 `node.zip` | **8.6 MB**（APK 内压缩后 7.5 MB） | Gradle `nodeAsset` |
+| 探针 APK（arm64 单 ABI） | **73.5 MB**（其中 libnode.so 62.4 MB） | `:probe:assembleDebug` |
 
 ## 二、探针怎么用
 
@@ -51,10 +51,17 @@ adb shell am start -n dev.mcbot.console.probe/.MainActivity \
 | mineflayer 能在 Node 18.20.4 上加载并 spawn | **已证明** | 本机 vanilla 1.20.1，905 ms；探针脚本 1247 ms |
 | 探针 APK 能构建 | **已证明（本地 + CI）** | 本机 `:probe:assembleDebug` 绿；CI run 43707042963 的 `probe` job 绿，产物 `mcbot-m3-probe`（26.9 MB zip） |
 | JNI 符号接了 `node::Start` | **已证明（静态）** | `libnative-lib.so` 导入 `_ZN4node5StartEiPPc`，`libnode.so` 导出同名符号 |
-| **libnode.so 在 Android 上起得来** | **未验证** | 需要真机 |
-| **Android 上 mineflayer 能连上** | **未验证** | 同上 |
+| **libnode.so 在 Android 上起得来** | **已证明（真机，2026-11-15）** | 探针页面返回 `node 18.20.4 / v8 10.2.154.26-node.37 / platform android / arch arm64 / uv 1.44.2`，HTTP 服务与 JSON 落盘都正常 |
+| **Android 上 mineflayer 能连上** | **未验证** | 首次真机运行卡在打包裁剪 bug（见第六节），已修，待复跑 |
 
-按交接单的禁止条款：**第 3 步（正式集成）不启动。** 在真机上跑出 `connect.ok=true, detail="spawned"` 之前，`android/app` 里不许出现 libnode 相关代码。
+### 真机第一次运行已经证明了什么
+
+`require('mineflayer')` 失败，但**探针本身跑起来了**：`node`/`v8`/`platform=android`/`arch=arm64`/`uv` 全部有值，`http server on 3999` 成功，结果文件写进了 `files/node/`。也就是说：
+
+- **libnode.so 在这个 arm64 设备上加载、启动、执行 JS、开 TCP 监听、写文件都正常**——门的一半过了，而且是此前最不确定的一半（4 KB 对齐在 4 KB 页设备上不是问题）。
+- 失败点在**我们自己的打包裁剪**，不在 nodejs-mobile。`createBot` 都没走到。
+
+按交接单的禁止条款：**第 3 步（正式集成）仍不启动**，等真机跑出 `connect.ok=true, detail="spawned"`。
 
 ## 四、上真机前必须看的两个风险
 
@@ -71,3 +78,15 @@ adb shell am start -n dev.mcbot.console.probe/.MainActivity \
 - **stdout 不通 logcat**：M1 的 `logger` 写文件照常可用，但真实日志要自己接到 logcat 或 HTTP。
 - **assets 体积**：`node_modules` 全量 41 MB（其中 minecraft-data 已裁到 1.6 MB）。若还要支持多版本，裁剪策略要跟着版本选择走。
 - **ABI**：只打 `arm64-v8a` 就够；要 emulator 再加 `x86_64`，APK 会翻倍。
+
+## 六、真机第一次运行暴露的打包 bug（已修，`prepare-bundle.js`）
+
+两次失败都不是 nodejs-mobile 的问题，而是我把 `minecraft-data` 裁错了。现在裁剪和校验都放在 `android/probe/tools/prepare-bundle.js`，构建期就会炸，不再等手机上才发现。
+
+1. **`bedrock/common` 不能删。** `minecraft-data/lib/supportsFeature.js` 与 `index.js` 在加载时就 `require('../minecraft-data/data/bedrock/common/*.json')`，哪怕只连 PC 服务端。第一次真机报的就是 `Cannot find module .../bedrock/common/features.json`。
+2. **不能按版本名字删目录。** `data.js` 是懒加载，但一个版本的数据并不在自己的目录里：`dataPaths.json` 里 `1.20.1` 的 `blocks` 指向 `pc/1.20`、`attributes` 指向 `pc/1.17`、`windows` 指向 `pc/1.16.1`。删目录必须按 `dataPaths` 的引用集合来，否则被保留的版本也会在 `createBot` 时炸（第二次是 `.../pc/26.1/blocks.json`）。
+3. **最新版本目录也要留。** `server.version: false` 是默认值（`src/config.js:10`），mineflayer 先用"最新的已知版本"发握手包再协商，所以 `dataPaths` 里最后一个版本（当前 `26.1`）必须存在。
+
+现在的校验会：把目标版本与最新版本的每个懒加载字段全部读一遍（缺文件即抛）、各编译一次 protodef serializer、并 `require('mineflayer')` 成功。等价于把 `createBot` 的初始化路径在构建机上先走一遍。
+
+本地已用 APK 里那份 `assets/node.zip` 解包、在同一 Node 18.20.4 上对 1.20.1 服务端复跑：`require mineflayer ok`、`{"ok":true,"detail":"spawned"}`。真机结论等下一次安装。

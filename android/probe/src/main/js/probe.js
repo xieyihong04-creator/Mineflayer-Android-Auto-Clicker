@@ -115,7 +115,12 @@ function connectOnce () {
     return
   }
 
+  // One attempt reports once: 'error' and 'end' both fire for a refused socket,
+  // and the first on-device run showed the same failure twice in steps[].
+  let finished = false
   const finish = (ok, detail) => {
+    if (finished) return
+    finished = true
     status.connect = { ok, ms: Date.now() - started, target: HOST + ':' + PORT, auth: wantAuth ? 'microsoft' : 'offline' }
     if (detail !== undefined) status.connect.detail = detail
     step('connect ' + HOST + ':' + PORT, ok, detail)

@@ -52,7 +52,8 @@ adb shell am start -n dev.mcbot.console.probe/.MainActivity \
 | 探针 APK 能构建 | **已证明（本地 + CI）** | 本机 `:probe:assembleDebug` 绿；CI run 43707042963 的 `probe` job 绿，产物 `mcbot-m3-probe`（26.9 MB zip） |
 | JNI 符号接了 `node::Start` | **已证明（静态）** | `libnative-lib.so` 导入 `_ZN4node5StartEiPPc`，`libnode.so` 导出同名符号 |
 | **libnode.so 在 Android 上起得来** | **已证明（真机，2026-11-15）** | 探针页面返回 `node 18.20.4 / v8 10.2.154.26-node.37 / platform android / arch arm64 / uv 1.44.2`，HTTP 服务与 JSON 落盘都正常 |
-| **Android 上 mineflayer 能连上** | **未验证** | 首次真机运行卡在打包裁剪 bug（见第六节），已修，待复跑 |
+| **mineflayer 在 nodejs-mobile 里能加载** | **已证明（真机，2026-11-15 11:44）** | `require mineflayer` ok（4.39.0，191 ms）、`require minecraft-protocol` ok（1.68.0），随后 `createBot` 真的发出了 TCP 连接 |
+| **Android 上 mineflayer 能连上并 spawn** | **未验证** | 当次目标是手机自己的 `127.0.0.1:25565`，没有任何服务端监听，报 `ECONNREFUSED` —— 这是**测试环境**问题，不是代码路径；需指向真实服务端复跑 |
 
 ### 真机第一次运行已经证明了什么
 
@@ -90,3 +91,16 @@ adb shell am start -n dev.mcbot.console.probe/.MainActivity \
 现在的校验会：把目标版本与最新版本的每个懒加载字段全部读一遍（缺文件即抛）、各编译一次 protodef serializer、并 `require('mineflayer')` 成功。等价于把 `createBot` 的初始化路径在构建机上先走一遍。
 
 本地已用 APK 里那份 `assets/node.zip` 解包、在同一 Node 18.20.4 上对 1.20.1 服务端复跑：`require mineflayer ok`、`{"ok":true,"detail":"spawned"}`。真机结论等下一次安装。
+
+### 第二次真机运行（2026-11-15 11:44）
+
+打包裁剪修好后：`require('mineflayer')` 191 ms 成功、`minecraft-protocol` 192 ms 成功、`createBot` 走到了建立 TCP 连接这一步，目标 `127.0.0.1:25565` 返回 `ECONNREFUSED`。
+
+这条错误恰恰说明链路是对的：**不是加载失败、不是 JNI 崩溃、不是权限被拒**，而是连接被明确拒绝——手机上根本没有服务端在 25565 监听。探针默认 host 是 `127.0.0.1`，必须显式传真实服务端地址：
+
+```bash
+adb shell am start -n dev.mcbot.console.probe/.MainActivity \
+  --es host 192.168.1.10 --ei port 25565 --es auth 0 --es user Probe
+```
+
+`ECONNREFUSED` 与"超时"不同：前者说明包到了对端并被拒绝（地址通、端口没人听），后者才是路由/防火墙问题。所以下一步只需要换 host，不需要改任何代码。

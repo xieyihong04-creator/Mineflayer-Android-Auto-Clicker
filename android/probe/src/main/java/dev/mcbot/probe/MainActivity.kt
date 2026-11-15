@@ -2,6 +2,8 @@ package dev.mcbot.probe
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -44,10 +46,16 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val host = intent.getStringExtra("host") ?: "127.0.0.1"
-        val port = intent.getIntExtra("port", 25565)
-        val auth = if (intent.getStringExtra("auth") == "1") "1" else "0"
-        val user = intent.getStringExtra("user") ?: "Probe"
+        // Empty means "not given", so probe.js can fall back to the last target
+        // saved on disk instead of a hardcoded 127.0.0.1.
+        val host = intent.getStringExtra("host") ?: ""
+        val port = intent.getIntExtra("port", 0)
+        val auth = when (intent.getStringExtra("auth")) {
+            "1" -> "1"
+            "0" -> "0"
+            else -> ""
+        }
+        val user = intent.getStringExtra("user") ?: ""
 
         statusBar = TextView(this).apply {
             setTextColor(0xFF8E9BAB.toInt())
@@ -67,6 +75,18 @@ class MainActivity : Activity() {
                 override fun onPageFinished(view: WebView, url: String?) {
                     retries = 0
                     statusBar.text = "libnode 已就绪 · 127.0.0.1:$STATUS_PORT"
+                }
+
+                override fun shouldOverrideUrlLoading(
+                    view: WebView,
+                    request: android.webkit.WebResourceRequest
+                ): Boolean {
+                    // The Microsoft device-code link must open in the real browser;
+                    // anything on loopback stays inside the page.
+                    val url = request.url
+                    if (url.host == "127.0.0.1" || url.host == "localhost") return false
+                    runCatching { startActivity(Intent(Intent.ACTION_VIEW, url)) }
+                    return true
                 }
 
                 override fun onReceivedError(
@@ -114,7 +134,15 @@ class MainActivity : Activity() {
                 ui.post { statusBar.text = "node 包已就绪，启动 libnode…" }
                 if (!started) {
                     started = true
-                    val args = arrayOf("node", File(dir, "probe.js").absolutePath, host, port.toString(), auth, user)
+                    val authDir = File(filesDir, "auth").apply { mkdirs() }
+                    val args = arrayOf(
+                        "node", File(dir, "probe.js").absolutePath,
+                        host,
+                        if (port > 0) port.toString() else "",
+                        auth,
+                        user,
+                        authDir.absolutePath
+                    )
                     // Blocks this thread until node exits; the UI stays alive.
                     val code = startNodeWithArguments(args)
                     ui.post { statusBar.text = "libnode 已退出（$code）" }

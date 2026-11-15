@@ -58,21 +58,24 @@
 - 连接目标卡里显示「实际连接：<IP:端口>（SRV → <目标>）」，能直接看出拨到了哪。
 - 域名拼错会显示 `域名不存在 (NXDOMAIN)`，不用再等 40 秒去猜。
 
-### 协议版本（1.13-pre7 陷阱）
+### 握手域名与协议版本（389 的真相）
 
-mineflayer 默认 `version: false`：先 ping 服务器，拿响应里的协议号去选 minecraft-data 的版本。真机上碰到过 server 报 **389**（`1.13-pre7`）——这个别名在 minecraft-data 里没有自己的数据目录，只有 major `1.13`（393），于是 minecraft-protocol 的 serializer 直接抛：
-
-```
-Unsupported protocol version '389' (attempted to use '393' data)
-```
-
-v9 自己先 ping，只接受「有独立数据目录且协议号自洽」的版本；`389` 会退到它的 major `1.13`，再用 393 去握手（BungeeCord 这类宣称支持 `1.8.x-26.x` 的代理接受 393）。页面上因此多一行：
+v7/v8 为了绕开 c-ares，把 `options.host` 换成了解析出来的 IP，于是**握手包里的 serverHost 也变成了 IP**。TCPShield 按 hostname 路由，收到 IP 就回一句 `Invalid hostname`，status 也换成占位响应：
 
 ```
-ping 172.65.211.204:25565    BungeeCord 1.8.x-26.x · protocol 775 → 26.1.2
+Unknown #389 · protocol 389 → 1.13
 ```
 
-有了这一行，服务器到底报什么版本、最终用了哪个版本，一眼就能看到。
+这个 389 不是服务器的版本，而是 TCPShield 对"未知域名"的假状态。mineflayer 的 autoVersion 信了它，选中 `1.13-pre7`（没有独立数据目录），serializer 才抛 `Unsupported protocol version '389' (attempted to use '393' data)`。也就是说，**版本报错是"握手域名丢了"的下游症状**。
+
+v10 起：握手包保留用户输入的域名（vanilla 也是这样），只有 TCP socket 连到解析出的 IP——`options.connect` 自定义 `net.connect(port, ip)`。构建机上验证过同一台服务器：
+
+```
+握手 serverHost = mcfallout.net  → BungeeCord 1.8.x-26.x · protocol 775
+握手 serverHost = 172.65.211.204 → Unknown #389 · protocol 389
+```
+
+版本选择仍然保留（页面上多一行 `ping <ip>:<port>  <名称> · protocol <n> → <版本>`）：只接受「有独立数据目录且协议号自洽」的版本，几个别名同协议时优先 mineflayer 的 testedVersions。它现在只是可见性和兜底，不再是绕过错误的手段。
 
 也可以先用 adb 预填（页面里还能改）：
 
@@ -167,4 +170,16 @@ v8 里数据齐了，`srv`/`a` 两步依旧正常（145 ms / 19 ms），但 `cre
 Unsupported protocol version '389' (attempted to use '393' data)
 ```
 
-服务器在这台手机上回报的协议号是 389（`1.13-pre7`），这个别名没有独立数据目录，minecraft-data 只能给 major `1.13`（393），serializer 自检不通过。同一域名从构建机 ping 回报的却是 `BungeeCord 1.8.x-26.x` / 775，说明版本号本身也会随链路/节点变化。v9 因此不再信任 autoVersion 的选择，自己 ping 并挑一个「数据存在且协议号自洽」的版本（389 → 1.13）。
+服务器在这台手机上回报的协议号是 389（`1.13-pre7`），这个别名没有独立数据目录，minecraft-data 只能给 major `1.13`（393），serializer 自检不通过。同一域名从构建机 ping 回报的却是 `BungeeCord 1.8.x-26.x` / 775——差别的根源不是链路，而是**握手里的 serverHost 被换成了 IP**（见上节）。v9 先自己 ping 并挑一个「数据存在且协议号自洽」的版本，暂时绕过了报错，但没有修根因。
+
+### 第五次真机运行（2026-11-15 22:00，v9）
+
+v9 的 `ping` 步骤把真相显示出来了：
+
+```
+ping 172.65.211.204:25565    Unknown #389 · protocol 389 → 1.13
+connect 172.65.211.204:25565 → kicked: "Invalid hostname. Please refer to ...
+                              docs.tcpshield.com ... DDoS protection by TCPShield.com"
+```
+
+`kicked: Invalid hostname` 直接点名：TCPShield 按握手 hostname 路由，收到的是 IP，于是拒连，并给了那个 `Unknown #389` 的假状态。v10 把握手 hostname 恢复成用户输入的域名，socket 仍连解析后的 IP。

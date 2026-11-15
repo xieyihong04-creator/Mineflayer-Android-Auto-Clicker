@@ -339,6 +339,10 @@ function versionPlayable (version) {
 function pickVersion (protocol, name) {
   if (!minecraftData) return null
   const mapped = minecraftData.postNettyVersionsByProtocolVersion.pc[protocol] || []
+  // Several aliases can share a protocol (26.1 / 26.1.1 / 26.1.2 = 775); prefer
+  // the one mineflayer actually lists as tested.
+  const tested = (mineflayer && mineflayer.testedVersions) || []
+  for (const c of mapped) if (tested.indexOf(c.minecraftVersion) >= 0 && versionPlayable(c.minecraftVersion)) return c.minecraftVersion
   for (const c of mapped) if (versionPlayable(c.minecraftVersion)) return c.minecraftVersion
   // 389 -> '1.13-pre7' has no data of its own, but its major version does.
   for (const c of mapped) if (c.majorVersion && versionPlayable(c.majorVersion)) return c.majorVersion
@@ -353,7 +357,13 @@ function pickVersion (protocol, name) {
 function resolveVersion (host, port, cb) {
   if (!minecraftProtocol) return cb(null)
   const started = Date.now()
-  withTimeout(minecraftProtocol.ping({ host, port, closeTimeout: 8000 }), 12000, 'ping')
+  // The status request must carry the hostname the user typed, not the IP:
+  // TCP proxies (TCPShield in front of mcfallout.net) route on that string and
+  // answer "Invalid hostname" / a decoy status otherwise. Only the socket goes
+  // to the resolved IP.
+  const pingOpts = { host: HOST, port, closeTimeout: 8000 }
+  if (host !== HOST) pingOpts.connect = (client) => client.setSocket(net.connect(port, host))
+  withTimeout(minecraftProtocol.ping(pingOpts), 12000, 'ping')
     .then(
       (res) => {
         const info = (res && res.version) || {}
@@ -416,11 +426,15 @@ function launch (host, port, note, version) {
   if (note) status.resolveNote = note
   const started = Date.now()
   const opts = {
-    host,
+    // The handshake carries what the user typed: TCP proxies (TCPShield)
+    // reject "Invalid hostname" when it holds an IP. The socket itself is
+    // connected by the override below.
+    host: HOST,
     port,
     username: USERNAME,
     auth: wantAuth ? 'microsoft' : 'offline'
   }
+  if (host !== HOST) opts.connect = (client) => client.setSocket(net.connect(port, host))
   // An explicit version stops mineflayer from re-pinging and picking an alias
   // we cannot serve (see version pick above).
   if (version) opts.version = version

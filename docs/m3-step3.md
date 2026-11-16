@@ -87,7 +87,7 @@ offline 登录 → kicked: "Not authenticated with Minecraft.net"     ← 正版
 
 ### D. node 包只解压一份 + 版本戳
 
-- App 的 APK 里 **一个** `lib/arm64-v8a/libnode.so`（62,475,584 B）+ **一个** `assets/node.zip`（15,439,175 B），已用 `unzip -l` 核对。探针 APK 是另一个独立 APK，二者不会被合并进同一个包。
+- App 的 APK 里 **一个** `lib/arm64-v8a/libnode.so`（62,475,584 B）+ **一个** `assets/node.zip`（15,441,629 B），已用 `unzip -l` 核对。探针 APK 是另一个独立 APK，二者不会被合并进同一个包。
 - 解压目录带 `.bundle-ok` 戳，内容是 `node.zip` 的 SHA-256 前 16 位：只有 bundle 变了才重解压，否则每次启动不做 145 MB 的无用 IO。
 - ABI 只有 `arm64-v8a`；要跑模拟器才加 `x86_64`（APK 直接翻倍）。
 - `libnode.so` 的下载放在 `android/libnode.gradle.kts`，`:app` 与 `:probe` 共用，避免两边 Node 版本/ABI 漂移。
@@ -140,13 +140,24 @@ ls: cannot open directory '/sys/class/power_supply': Permission denied
 | 项 | 数值 | 怎么得到 |
 |---|---|---|
 | App bundle（解压后） | **145 MB / 6295 个文件** | `:app:bundleNode` |
-| `assets/node.zip` | **15,439,175 B** | `:app:nodeAsset` |
-| debug APK | **80,025,110 B** | `:app:assembleDebug` |
+| `assets/node.zip` | **15,441,629 B** | `:app:nodeAsset` |
+| debug APK | **80,029,314 B** | `:app:assembleDebug` |
 | 其中 `libnode.so` | 62,475,584 B | nodejs-mobile v18.20.4，arm64 |
 
 构建期校验（沿用探针那套，改由 `bundle-node.sh` 的 `app` 模式调用）：`npm ci` → 按 `dataPaths` 裁剪 `minecraft-data`（保留全部 `pc/*` + 两个 `common`）→ 对 66 个可玩版本逐个编译 serializer → `require('mineflayer')` → 再拷 `src/`、`web/`、`entry.js`。任何一步失败在 CI/本机就炸，不会到手机上才炸。
 
 CI（`.github/workflows/android-build.yml`）的 `apk` job 现在也装 `ndk;27.0.12077973` 与 `cmake;3.22.1`，构建时间与产物都变大（APK ~80 MB，上传仍是 14 天）。
+
+构建注意：**交付前必须 `clean` 后再打包**。增量打包在 `assets/node.zip` 变化时会在 APK 里留下约 14 MB 的空洞（同一位置被旧数据占位），产物从 80 MB 涨到 94 MB；`clean` 后重编即恢复。上面三个数值都取自 clean 构建。
+
+本地验证（不需要手机，跑 APK 里那份 bundle）：
+
+```
+node entry.js /tmp/state &                  # 解压 node.zip 后
+curl -s 127.0.0.1:8765/api/health
+# 再通过 WS 发 {"t":"battery","level":9,"charging":false,"tempC":35.2}
+# -> ack {ok:true, mode:"L3"}，health 里 battery/charging 两行 source=android-native,status=live
+```
 
 ---
 

@@ -13,6 +13,7 @@ import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.webkit.WebSettings
@@ -73,7 +74,23 @@ class MainActivity : Activity(), NativeSignals.Listener {
             cacheMode = WebSettings.LOAD_NO_CACHE
             // The page is local; nothing else should ever load inside it.
             setGeolocationEnabled(false)
+            // Without these two the WebView ignores <meta viewport> and lays the
+            // page out at a 980px desktop width, then scales it: everything looks
+            // giant and cut off on a phone. With them, width=device-width is
+            // honoured and the responsive CSS actually applies.
+            useWideViewPort = true
+            loadWithOverviewMode = true
+            // A console is not a document: pinch zoom only makes the panel
+            // impossible to hit. Double-tap and text zoom stay off too.
+            setSupportZoom(false)
+            builtInZoomControls = false
+            displayZoomControls = false
+            // Font boosting (Android "text autosizing") would inflate every label
+            // inside the wide legacy layout; with device-width it is unnecessary.
+            minimumFontSize = 0
+            textZoom = 100
         }
+        webView.overScrollMode = View.OVER_SCROLL_NEVER
         webView.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView, url: String) {
                 pageReady = true

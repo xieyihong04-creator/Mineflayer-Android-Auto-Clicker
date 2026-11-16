@@ -38,6 +38,11 @@ class BridgeService : Service() {
     private var startedAt = 0L
     private var lastRestartAt = 0L
     private var restarts = 0
+    // Exhaustion is terminal for this watchdog run: keeping retries alive all
+    // night would look like work while the bot is actually dead. Opening the
+    // app (onStartCommand) clears it and starts the core again by hand.
+    private var watching = false
+    private var exhausted = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -50,9 +55,15 @@ class BridgeService : Service() {
                 setShowBadge(false)
             }
         )
+        manager.createNotificationChannel(
+            NotificationChannel(ALERT_CHANNEL_ID, getString(R.string.alert_channel), NotificationManager.IMPORTANCE_HIGH).apply {
+                description = getString(R.string.alert_channel_desc)
+                setShowBadge(true)
+            }
+        )
         startedAt = SystemClock.elapsedRealtime()
         NodeService.start(this)
-        ui.postDelayed(watchdog, WATCH_INTERVAL_MS)
+        startWatchdog()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -75,14 +86,29 @@ class BridgeService : Service() {
         } else {
             startForeground(NOTIFY_ID, notification)
         }
-        // A sticky restart of this service must also revive the core.
+        // A sticky restart of this service must also revive the core. Opening
+        // the app after the restart cap was hit is the manual recovery path.
+        if (exhausted) {
+            exhausted = false
+            restarts = 0
+            consecutiveFailures = 0
+            startedAt = SystemClock.elapsedRealtime()
+        }
         NodeService.start(this)
+        startWatchdog()
         return START_STICKY
     }
 
     override fun onDestroy() {
         ui.removeCallbacksAndMessages(null)
+        watching = false
         super.onDestroy()
+    }
+
+    private fun startWatchdog() {
+        if (watching) return
+        watching = true
+        ui.postDelayed(watchdog, WATCH_INTERVAL_MS)
     }
 
     /**
@@ -90,6 +116,10 @@ class BridgeService : Service() {
      * count as "the core is gone". The grace covers the first launch, where
      * ~130 MB of JS and minecraft-data have to be extracted before Node even
      * starts.
+     *
+     * After MAX_RESTARTS the core is a code bug, not a transient kill: post an
+     * explicit alert and STOP. Silent surrender would look exactly like a
+     * healthy night while the bot is actually offline.
      */
     private val watchdog = object : Runnable {
         override fun run() {
@@ -103,7 +133,11 @@ class BridgeService : Service() {
                         val now = SystemClock.elapsedRealtime()
                         val graceOver = now - startedAt > STARTUP_GRACE_MS
                         val coolEnough = now - lastRestartAt > MIN_RESTART_INTERVAL_MS
-                        if (graceOver && coolEnough && consecutiveFailures >= 4 && restarts < MAX_RESTARTS) {
+                        if (graceOver && coolEnough && consecutiveFailures >= 4) {
+                            if (restarts >= MAX_RESTARTS) {
+                                alertExhausted()
+                                return@post
+                            }
                             consecutiveFailures = 0
                             restarts += 1
                             lastRestartAt = now
@@ -113,6 +147,35 @@ class BridgeService : Service() {
                     ui.postDelayed(this, WATCH_INTERVAL_MS)
                 }
             }.start()
+        }
+    }
+
+    private fun alertExhausted() {
+        if (exhausted) return
+        exhausted = true
+        watching = false
+        ui.removeCallbacks(watchdog)
+        val tap = PendingIntent.getActivity(
+            this,
+            1,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE
+        )
+        val alert = NotificationCompat.Builder(this, ALERT_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_launcher)
+            .setContentTitle(getString(R.string.restart_limit_title))
+            .setContentText(getString(R.string.restart_limit_text, restarts))
+            .setStyle(NotificationCompat.BigTextStyle().bigText(getString(R.string.restart_limit_text, restarts)))
+            .setContentIntent(tap)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .build()
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        try {
+            manager.notify(ALERT_NOTIFY_ID, alert)
+        } catch (_: SecurityException) {
+            // Notifications revoked: the alert cannot be shown, but stopping is
+            // still correct - and the user will see the dead HUD when they open.
         }
     }
 
@@ -135,7 +198,9 @@ class BridgeService : Service() {
 
     companion object {
         private const val CHANNEL_ID = "bridge"
+        private const val ALERT_CHANNEL_ID = "bridge-alert"
         private const val NOTIFY_ID = 1001
+        private const val ALERT_NOTIFY_ID = 1002
         private const val WATCH_INTERVAL_MS = 15000L
         private const val STARTUP_GRACE_MS = 90000L
         private const val MIN_RESTART_INTERVAL_MS = 60000L

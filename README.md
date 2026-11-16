@@ -130,29 +130,31 @@ M2 **不以功耗为验收项**；169 个测试通过只证明 Node 侧契约没
 
 APK 本身不入库（`.gitignore` 排除 `*.apk` 与 `android/**/build/`）；`dist/` 里放的是**手动打好的 zip 快照**，内含 `app-debug.apk` 与 `BUILD.txt`（commit、CI run、工具链、APK 的 sha256），方便不入 GitHub 的场合直接取用。它是二进制快照，不是每次构建自动更新，用前先看 `BUILD.txt` 对不对得上当前代码。
 
-## M3：nodejs-mobile（探针门已过，第 3 步已实现，4 条真机验收未验证）
+## M3：nodejs-mobile（探针门已过，第 3 步已实现，5 条真机验收未验证）
 
 **真机结论（2026-11-15 22:06，探针 v10）**：`libnode.so` 在 arm64 Android 上能加载、执行 JS、开 127.0.0.1 端口、写文件；mineflayer 4.39.0 能在 nodejs-mobile 里 require 成功并**连上正版服 spawn**（版本 26.1、坐标 -137.6/35/912.2、2975 ms）。所以第 3 步的禁止条款解除。
 
-**第 3 步做了什么**：`src/` + `node_modules` + `web/` 打成 `assets/node.zip`（解压 145 MB，zip 15.4 MB），Node 跑在私有进程 `:node`，WebView + specialUse 前台服务留在主进程；主进程每 15 s 探一次 `/api/health`，`:node` 的 Node 退出后自杀进程、看门狗拉起新进程（nodejs-mobile 一个进程只能起一次 Node，重启只能换进程），页面用 M1 已有的 WS 重连自愈。APK 80 MB（libnode.so 独占 62 MB），arm64 单 ABI。
+**第 3 步做了什么**：`src/` + `node_modules` + `web/` 打成 `assets/node.zip`（解压 145 MB，zip 15.4 MB），Node 跑在私有进程 `:node`，WebView + specialUse 前台服务留在主进程；主进程每 15 s 探一次 `/api/health`，`:node` 的 Node 退出后自杀进程、看门狗拉起新进程（nodejs-mobile 一个进程只能起一次 Node，重启只能换进程），页面用 M1 已有的 WS 重连自愈。重启上限 10 次，耗尽后发高优先级通知告警并停止，重开 App 才清零。APK 80 MB（libnode.so 独占 62 MB），arm64 单 ABI。
+
+**电量回归已修（第 3 步缺陷）**：真机实测 `/sys/class/power_supply` 即使目录 755 仍返回 `Permission denied`（SELinux，无 root 无解），而 App 里没有 Termux:API 可退，因此电量必然是 `null`、L3（<10% 断开）/L0（<20% 降档）全部失效。现在五个信号全部原生：`ACTION_BATTERY_CHANGED`（sticky）取 `EXTRA_LEVEL/EXTRA_SCALE`、`EXTRA_PLUGGED + EXTRA_STATUS` 双字段定充电、`EXTRA_TEMPERATURE` 交叉校验，并带 `charge_counter`/`cycle`（有则带）。上行新增 `battery {level, charging, tempC?}`，**`protoVersion` 仍为 1、档位状态机一行不改**；变更即推 + 60 s 心跳 + 5 分钟过期回落；优先级 native → sysfs → termux-api → null（后两级留给独立 Termux）。
 
 **地址解析进入正式 bot**：`src/util/resolve.js` 自己做 SRV（系统 → Cloudflare DoH → Google DoH）+ A（`dns.lookup`），并且**握手包保留用户输入的域名**，只有 socket 连解析出的 IP。TCPShield/NeoProtect 这类按 hostname 路由的代理，收到 IP 会回 `Invalid hostname` 并伪造一个 `protocol 389` 的状态——这正是探针早期 1.13-pre7 报错和 `Invalid hostname` 被踢的根因。回归实测：`mcfallout.net` → `jp.mcfallout.net:25565` → BungeeCord protocol **775**，offline 登录被"正版服认证拒绝"而不是被代理拒绝。
 
-**仍未验证**：装 APK 后的 4 条（无 Termux 冷启动并 spawn、锁屏 30 分钟不掉线、杀 `:node` 自愈、覆盖安装 token 不丢）。**功耗/发热/后台存活时长既不在验收内，也没有任何测量数据。** 细节与风险见 [`docs/m3-step3.md`](docs/m3-step3.md)；探针本身的过程记录（六次真机运行、打包裁剪的三个坑）见 [`docs/m3-probe.md`](docs/m3-probe.md)。
+**仍未验证**：装 APK 后的 5 条（无 Termux 冷启动并 spawn、锁屏 30 分钟不掉线、杀 `:node` 自愈、覆盖安装 token 不丢、**强制停止 Termux:API 或卸载 Termux 后五信号仍全部 live**）。**功耗/发热/后台存活时长既不在验收内，也没有任何测量数据。** 细节与风险见 [`docs/m3-step3.md`](docs/m3-step3.md)；探针本身的过程记录（六次真机运行、打包裁剪的三个坑）见 [`docs/m3-probe.md`](docs/m3-probe.md)。
 
 ## 功耗分级实现细节
 
-- **信号来源**：`termux-battery-status` 为主（本机 sysfs 被 SELinux 拒）、`thermal_zone*/type+temp` 按白名单选、`settings get global low_power`。桌面或测试可用 `MCBOT_MOCK_POWER='{"battery":18,"screenOn":false}'` 模拟。
+- **信号来源**：APK 内五个信号全部来自原生（屏幕/温度/省电/电量/充电）；独立 Termux 仍可用 `termux-battery-status`（本机 sysfs 被 SELinux 拒）、`thermal_zone*/type+temp` 白名单、`settings get global low_power`。桌面或测试可用 `MCBOT_MOCK_POWER='{"battery":18,"screenOn":false}'` 模拟。
 - **实测硬件档案（Xiaomi 2509FPN0BC / Android 17 / SDK 37，已冻结，不再猜测）**：
   - `/sys/class/power_supply` 对普通 uid 是 **EACCES（SELinux，无 root 永久不可用）**，所以电量走 `termux-battery-status`（需要 Termux:API **App**，不只是 `pkg install termux-api`）。
   - 电量返回里 `plugged` 与 `status` 是两个独立字段；**放电时 `current` 为正**，符号约定不可靠，因此功率取 `|V*I|`。
   - 温度 96 个 zone，只有 `quiet_therm`（机身）/`battery`、`batt_temp`（电芯）/`charger_therm` 有意义；`cpu-hw-trip-*`（95000 是跳闸阈值）、`vbat`（电压）、`*-bcl-lvl*`、`*-ibat-lvl*`、`-273000`（离线哨兵）必须排除。
   - 待机机身 42.9–44.2 °C、电芯 37.5–38.0 °C —— 绝对阈值会让 bot 永久卡 L0。
 - **每个外部信号都有第三态，且不会静默等于正常值**：
-  - 电量：sysfs 与 `termux-battery-status` 都失败 → `null`，档位按 **L1** 处理（不是“100%”也不会自动 L2）；UI 顶部弹告警。
-  - 电量节点名各 ROM 不同（`battery`/`BATTERY`/`bms`/`BAT0`…）：先扫 `/sys/class/power_supply/*/type == Battery`，再退回固定候选目录。
-  - **充电是独立一行**，判定用 `plugged` + `status` 双字段（**不用电流符号**）；两字段冲突时按“未充电”处理（安全侧：低电量照样 L3 断开）。读不到时为 `null`（UI 显示「未知」）。
-  - `termux-battery-status` 依赖 **Termux:API App + `pkg install termux-api`**，是硬依赖；未安装时降级为 `unavailable` 而不是假装有读数。
+  - 电量：**APK 内优先原生广播**（`ACTION_BATTERY_CHANGED`，零权限）；独立 Termux 才退回 sysfs → `termux-battery-status` → `null`。全都失败时档位按 **L1** 处理（不是“100%”也不会自动 L2）；UI 顶部弹告警。
+  - 电量节点名各 ROM 不同（`battery`/`BATTERY`/`bms`/`BAT0`…）：先扫 `/sys/class/power_supply/*/type == Battery`，再退回固定候选目录（只在独立 Termux 路径上生效）。
+  - **充电是独立一行**，判定用 `plugged` + `status` 双字段（**不用电流符号**）；两字段冲突时按“未充电”处理（安全侧：低电量照样 L3 断开）。原生路径用 `EXTRA_PLUGGED` + `EXTRA_STATUS`，规则相同。读不到时为 `null`（UI 显示「未知」）。
+  - `termux-battery-status` 只对独立 Termux 是硬依赖（Termux:API App + `pkg install termux-api`）；APK 内不需要，未安装也不影响五信号。任一来源缺失时降级为 `unavailable` 而不是假装有读数。
   - 温度：按 `type` 运行时解析白名单（**禁止硬编码 zone 编号**，跨 ROM/重启不稳定），选中的 zone 读不到 → `null`，温度降档不触发，UI 明示。
   - **温度阈值是 baseline 相对增量**：启动后 `baselineWindowMs`（默认 3 分钟）内取中位数作为基线，超过 `l0DeltaC`（默认 7 °C）才进 L0。基线未就绪时 `thermalDelta=null`，**不会**降档（自检表标 `baseline: pending`）。
   - **失败原因进状态字符串**：`unavailable(selinux)` / `unavailable(no-bridge)` / `unavailable(no-zone)`，另有 `battery.bridge` 字段单独标桥的状态；`live(termux-api)` 表示走的 API 而不是 sysfs。不是笼统的 `unavailable`，因为「SELinux 永久拒绝」和「Termux:API 没装」是两种完全不同的处置。
@@ -194,7 +196,7 @@ APK 本身不入库（`.gitignore` 排除 `*.apk` 与 `android/**/build/`）；`
 // 启动自检表（hello 内也有一份）；每次变化推一次
 {"t":"signals","signals":{
   "battery":{"source":"sysfs|termux-api","status":"live(termux-api)",
-             "bridge":null},                                     // | "unavailable(selinux)" | "unavailable(no-bridge)" | "mock"
+             "value":42,"tempC":null,"bridge":null},               // APK 内 source=android-native, status=live, value=百分比
   "charging":{"source":"sysfs|termux-api","status":"live(termux-api)"},
   "thermal":{"source":"sysfs","status":"live",
              "baseline":"ready","zone":"quiet_therm","native":null}, // M2 原生时 source=android-native, native=0..6
@@ -202,6 +204,8 @@ APK 本身不入库（`.gitignore` 排除 `*.apk` 与 `android/**/build/`）；`
   "powerSave":{"source":"settings","status":"live"}              // 读不到 -> "unavailable"，按未开启处理；M2 原生时 source=android-native
 }}
 ```
+
+原生外壳另有一条**上行**（协议仍 v1，纯新增）：`{"t":"battery","level":42,"charging":false,"tempC":35.2,...}`，由 `ACTION_BATTERY_CHANGED` 产生；变更即推，60 s 心跳重发，5 分钟无更新即失效回落。
 
 下行：`cmd` / `goto` / `stop` / `eat` / `toss` / `setMode` / `connect` / `config`（`protocol.js` 中逐字段校验，非法输入回 `ack ok=false` 且不影响连接）。
 
@@ -251,9 +255,9 @@ M1 已实测：服务启动、静态页、WS 握手、非法指令拒绝、真�
 - **功率/cycle/满容量估算只进 jsonl 日志**（`logs/power-<day>.jsonl`，L0 也照写），不做界面：`DEBUG` 与遥测都不该占用 UI。
 - **测量时只能有一个采样源**：bot 内部是 10 s 一条，脚本探针是 60 s 一条；两者同时跑就是 7 次/分 vs 1 次/分，差值里会混进探针本身的开销。所以 `MCBOT_POWER_TELEMETRY=0` 关掉内部日志，`ondevice-once.sh` 启动 bot 时默认带上它，两种模式都只剩脚本的 1 次/分。
 - `fullMah` 外推只在 **30–80% 且稳定放电**时记录，充电中/低电量/字段冲突一律 `null`：`charge_counter` 的线性外推在这些区间误差会被放大，会污染容量趋势。
-- `nodejs-mobile` 已在真机上证明能连能 spawn（探针 v10），第 3 步也已把 Node 放进 App 的 `:node` 进程；但**应用内自启/锁屏 30 分钟/杀进程自愈/覆盖安装不丢 token 四条仍未验证**。Node 18 已 EOL、mineflayer 声明 `>=22`，实测可用但升级必须锁 `package-lock.json`。
-- **应用内的电量信号可能不可用**：sysfs 在 untrusted_app 里大概率被 SELinux 拒，而 App 里没有 `termux-battery-status` 可退，`/api/health` 的 `power.battery` 可能是 `null`，L3/L0 的电量条件因此不会触发。修法是把电量加到原生信号桥（新增上行、协议仍 v1），尚未实现。
-- **挂住但不退出的 Node 不会被强杀**：主进程没有安全的跨进程 kill API，看门狗只能处理"进程已经没了"。表现为页面离线，不会无限重启（上限 10 次）。
+- `nodejs-mobile` 已在真机上证明能连能 spawn（探针 v10），第 3 步也已把 Node 放进 App 的 `:node` 进程；但**应用内自启/锁屏 30 分钟/杀进程自愈/覆盖安装不丢 token/卸掉 Termux 后五信号 live 五条仍未验证**。Node 18 已 EOL、mineflayer 声明 `>=22`，实测可用但升级必须锁 `package-lock.json`。
+- **电量已改为原生广播**：sysfs 在 untrusted_app 里被 SELinux 拒（已实测），因此 `ACTION_BATTERY_CHANGED` 是应用内唯一来源；若 ROM 连该广播都不发，`power.battery` 回落到 `null`，档位按未知电量（L1）处理、不会假装有电。真机仍须按验收第 5 条核对五行信号。
+- **挂住但不退出的 Node 不会被强杀**：主进程没有安全的跨进程 kill API，看门狗只能处理"进程已经没了"。表现为页面离线；重启上限 10 次，耗尽后发高优先级告警并停止，重开 App 才清零重试。
 - WS 只监听 `127.0.0.1` 且无鉴权；**不要把端口暴露到局域网**。
 
 ## 风险对策落地

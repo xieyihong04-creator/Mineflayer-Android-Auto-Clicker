@@ -210,7 +210,9 @@ libnode 已就绪 · 127.0.0.1:3999
 
 ### 这一步之后
 
-第 3–6 步已按顺序落地，见 [`m3-step3.md`](m3-step3.md)：`src/index.js` 在 `:node` 进程里启动（不碰 WebView/WS）→ `src` + `web` + `node_modules` 打进 assets（沿用本文这份 `prepare-bundle.js` 的裁剪与校验）→ Node 生命周期跟主进程的 FGS 绑定（退出即换进程，不在原进程重启）→ 4 条真机验收待跑。
+第 3–6 步已按顺序落地，见 [`m3-step3.md`](m3-step3.md)：`src/index.js` 在 `:node` 进程里启动（不碰 WebView/WS）→ `src` + `web` + `node_modules` 打进 assets（沿用本文这份 `prepare-bundle.js` 的裁剪与校验）→ Node 生命周期跟主进程的 FGS 绑定（退出即换进程，不在原进程重启）→ 5 条真机验收待跑。
+
+第 3 步落地后还发现并修掉一个真机缺陷：电量在应用内必然读不到（sysfs 被 SELinux 拒、App 里没有 Termux:API），L3/L0 失效。现在电量/充电改由 `ACTION_BATTERY_CHANGED` 原生上报，协议仍 v1、档位状态机未改；详见 m3-step3.md 的「三·补」一节。
 
 当初记下的那条约束也处理了：正式 App 的 APK 里只有一个 `libnode.so` 和一个 `node.zip`，解压目录换成 App 自己的 `filesDir/node`，而 token 缓存放在 `filesDir/auth`（bundle 之外，重解压不会动它）。
 

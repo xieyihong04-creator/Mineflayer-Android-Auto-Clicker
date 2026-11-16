@@ -6,6 +6,11 @@
     <string name="fgs_title">MCBOT 桥接运行中</string>
     <string name="fgs_text">内置 Node 核心运行中（机器人不会因熄屏停止）</string>
 
+    <string name="alert_channel">核心故障告警</string>
+    <string name="alert_channel_desc">内置 Node 核心反复崩溃、重启次数耗尽时提醒</string>
+    <string name="restart_limit_title">内置 Node 核心已停止重启</string>
+    <string name="restart_limit_text">已连续重启 %1$d 次仍无法恢复，自动重启已停止（不会静默重试一整夜）。请打开应用查看日志 files/logs/node-boot.log 与 crash.log，修复后手动点“重试”。</string>
+
     <string name="core_waiting">Node 核心没有起来（127.0.0.1:%1$d）\n\n先点“重试”。仍然不行时看 files/logs/node-boot.log 与 crash.log（adb 或文件管理器可读），或把日志发给我。</string>
     <string name="core_starting">正在启动内置 Node 核心…（%1$d/%2$d）\n首次启动要解压约 130 MB 的运行时与版本数据，需要一点时间。</string>
     <string name="core_waiting_hint">等待中…</string>

@@ -320,3 +320,28 @@ test('bridge: M2 native thermal/powerSave messages drive the manager and health'
   assert.equal(bad.ok, false)
   assert.equal(manager.native.thermal, 2, 'a rejected value must not be stored')
 })
+
+test('bridge: M3 native battery message drives the tier, table and health', async (t) => {
+  const { client, ws, manager, server } = await setup(t)
+  await client.wait((m) => m.t === 'hello')
+
+  ws.send(JSON.stringify({ t: 'battery', level: 9, charging: false, tempC: 35.2, id: 41 }))
+  const ack = await client.wait((m) => m.t === 'ack' && m.id === 41)
+  assert.equal(ack.ok, true)
+  assert.equal(ack.mode, 'L3', 'native 9% must reach the untouched tier machine')
+  assert.equal(manager.native.battery.level, 9)
+  const table = manager.signalTable()
+  assert.equal(table.battery.source, 'android-native')
+  assert.equal(table.battery.status, 'live')
+  assert.equal(table.charging.status, 'live')
+
+  const health = JSON.parse((await httpGet(server.port, '/api/health')).body)
+  assert.equal(health.power.battery, 9)
+  assert.equal(health.power.batteryNative.level, 9)
+  assert.equal(health.signals.battery.value, 9)
+
+  ws.send(JSON.stringify({ t: 'battery', level: 140, charging: false, id: 42 }))
+  const bad = await client.wait((m) => m.t === 'ack' && m.id === 42)
+  assert.equal(bad.ok, false)
+  assert.equal(manager.native.battery.level, 9, 'a rejected value must not replace the reading')
+})

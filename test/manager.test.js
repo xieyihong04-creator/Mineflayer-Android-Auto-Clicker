@@ -397,6 +397,62 @@ test('signal self-check: termux-api fallback is reported, not hidden', () => {
   assert.equal(manager.signalTable().battery.status, 'live(termux-api)')
 })
 
+test('M3 defect: native battery revives L3 when sysfs is SELinux-denied', () => {
+  const { manager } = makeManager()
+  // Inside the APK this is what the poller returns: nothing readable.
+  manager.updatePower({
+    battery: null,
+    charging: null,
+    thermal: 0,
+    powerSave: null,
+    availability: {
+      battery: 'unavailable(selinux)',
+      charging: 'unavailable',
+      thermal: 'live',
+      powerSave: 'unavailable'
+    }
+  })
+  assert.equal(manager.mergedBattery(), null, 'unknown battery must not pretend to be full')
+  assert.equal(manager.tier.lastSignals.battery, null)
+  assert.equal(manager.signalTable().battery.status, 'unavailable(selinux)')
+
+  const mode = manager.reportNativeBattery({ level: 9, charging: false, tempC: 35.2 })
+  assert.equal(mode, 'L3', 'a native 9% reading must reach the untouched tier machine')
+  const table = manager.signalTable()
+  assert.equal(table.battery.source, 'android-native')
+  assert.equal(table.battery.status, 'live')
+  assert.equal(table.battery.value, 9)
+  assert.equal(table.battery.tempC, 35.2)
+  assert.equal(table.charging.source, 'android-native')
+  assert.equal(table.charging.status, 'live')
+  assert.equal(manager.powerSnapshot().battery, 9)
+  assert.equal(manager.powerSnapshot().charging, false)
+  assert.equal(manager.powerSnapshot().batteryNative.level, 9)
+
+  // Charging is the L3 skip, and it must come from the same native reading.
+  const back = manager.reportNativeBattery({ level: 9, charging: true })
+  assert.notEqual(back, 'L3')
+})
+
+test('M3 defect: native battery expires after 5 min and falls back to the poller', () => {
+  let clock = 1_000_000
+  const { manager } = makeManager({}, { now: () => clock })
+  manager.updatePower({
+    battery: null,
+    charging: null,
+    thermal: 0,
+    powerSave: null,
+    availability: { battery: 'unavailable(selinux)', charging: 'unavailable', thermal: 'live', powerSave: 'live' }
+  })
+  manager.reportNativeBattery({ level: 55, charging: false })
+  assert.equal(manager.powerSnapshot().battery, 55)
+
+  clock += 301_000
+  assert.equal(manager.powerSnapshot().battery, null, 'a dead shell must not pin the reading forever')
+  assert.equal(manager.signalTable().battery.status, 'unavailable(selinux)')
+  assert.equal(manager.signalTable().battery.source, 'sysfs|termux-api')
+})
+
 test('signal self-check: failure reasons are preserved verbatim (selinux vs no-bridge)', () => {
   const { manager } = makeManager()
   manager.updatePower({

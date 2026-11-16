@@ -221,6 +221,11 @@ class BridgeServer {
         return { ok: true, mode: this.manager.reportNativeThermal(payload.value) }
       case 'powerSave':
         return { ok: true, mode: this.manager.reportNativePowerSave(payload.on) }
+      // M3: sticky ACTION_BATTERY_CHANGED. Native is the primary battery
+      // source inside the APK (sysfs is SELinux-denied, Termux:API absent);
+      // the tier machine is untouched, it just gets a real reading again.
+      case 'battery':
+        return { ok: true, mode: this.manager.reportNativeBattery(payload) }
       case 'waypoint': {
         if (payload.action === 'save') return this.manager.saveWaypoint(payload.name)
         if (payload.action === 'go') return this.manager.goWaypoint(payload.name)

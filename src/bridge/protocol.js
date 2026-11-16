@@ -26,10 +26,12 @@ class ProtocolError extends Error {
 // M2 appends two upstream-style reports that the native shell sends over the
 // same socket: `thermal` (PowerManager thermal status 0-6) and `powerSave`
 // (isPowerSaveMode). Both are additive; no existing field or type changes and
-// protoVersion stays 1.
-const DOWN_TYPES = new Set(['cmd', 'goto', 'stop', 'eat', 'toss', 'setMode', 'connect', 'disconnect', 'waypoint', 'screen', 'thermal', 'powerSave', 'config', 'ping'])
+// protoVersion stays 1. M3 adds `battery` from the sticky
+// ACTION_BATTERY_CHANGED broadcast (level/charging plus optional tempC,
+// chargeCounterUah, cycle) - same additive rule, tier machine untouched.
+const DOWN_TYPES = new Set(['cmd', 'goto', 'stop', 'eat', 'toss', 'setMode', 'connect', 'disconnect', 'waypoint', 'screen', 'thermal', 'powerSave', 'battery', 'config', 'ping'])
 const PROTO_VERSION = 1
-const UP_TYPES = new Set(['state', 'chat', 'inv', 'nav', 'mode', 'log', 'hello', 'error', 'notify', 'auth', 'config', 'signals', 'thermal', 'powerSave'])
+const UP_TYPES = new Set(['state', 'chat', 'inv', 'nav', 'mode', 'log', 'hello', 'error', 'notify', 'auth', 'config', 'signals', 'thermal', 'powerSave', 'battery'])
 
 function num (value, name, { min = -Infinity, max = Infinity } = {}) {
   const n = Number(value)
@@ -114,6 +116,30 @@ function parseDown (raw) {
     case 'powerSave': {
       if (typeof p.on !== 'boolean') throw new ProtocolError('powerSave.on must be a boolean')
       return { type, payload: { on: p.on } }
+    }
+    case 'battery': {
+      // Percent comes from EXTRA_LEVEL/EXTRA_SCALE and is already clamped by
+      // the shell; reject anything else instead of trusting it. `charging`
+      // follows the shell's two-field rule (PLUGGED && CHARGING|FULL); null
+      // means the ROM did not answer, which is not the same as "unplugged".
+      const level = num(p.level, 'battery.level', { min: 0, max: 100 })
+      if (!Number.isInteger(level)) throw new ProtocolError('battery.level must be an integer 0-100')
+      if (p.charging !== null && p.charging !== undefined && typeof p.charging !== 'boolean') {
+        throw new ProtocolError('battery.charging must be a boolean or null')
+      }
+      const payload = { level, charging: p.charging === undefined ? null : p.charging }
+      if (p.tempC !== undefined && p.tempC !== null) {
+        payload.tempC = num(p.tempC, 'battery.tempC', { min: -40, max: 150 })
+      }
+      if (p.chargeCounterUah !== undefined && p.chargeCounterUah !== null) {
+        payload.chargeCounterUah = num(p.chargeCounterUah, 'battery.chargeCounterUah', { min: 0 })
+      }
+      if (p.cycle !== undefined && p.cycle !== null) {
+        const cycle = num(p.cycle, 'battery.cycle', { min: 0 })
+        if (!Number.isInteger(cycle)) throw new ProtocolError('battery.cycle must be an integer')
+        payload.cycle = cycle
+      }
+      return { type, payload }
     }
     case 'waypoint': {
       const action = p.action

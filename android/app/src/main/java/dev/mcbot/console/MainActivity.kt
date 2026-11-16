@@ -55,6 +55,7 @@ class MainActivity : Activity(), NativeSignals.Listener {
     private var lastScreen = false
     private var lastThermal: Int? = null
     private var lastPowerSave: Boolean? = null
+    private var lastBattery: NativeSignals.BatteryReading? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -132,24 +133,49 @@ class MainActivity : Activity(), NativeSignals.Listener {
         js(jsCall("powerSave($on)"))
     }
 
+    /**
+     * The sticky battery broadcast is the ONLY battery source once Node lives
+     * inside the app: sysfs is SELinux-denied and Termux:API may not exist.
+     * Push on every change; the 60 s heartbeat re-sends it so the core's
+     * 5-minute staleness window never expires while the shell is alive.
+     */
+    override fun onBattery(reading: NativeSignals.BatteryReading?) {
+        lastBattery = reading
+        val level = reading?.level ?: return
+        js(jsCall("battery(${batteryArgs(reading, level)})"))
+    }
+
     private fun pushInit() {
         lastScreen = signals.screenOn
         lastThermal = signals.thermal
         lastPowerSave = signals.powerSave
+        lastBattery = signals.batteryNow()
         val thermal = lastThermal?.toString() ?: "null"
-        js(jsCall("init({screenOn:$lastScreen,thermal:$thermal,powerSave:$lastPowerSave})"))
+        val battery = lastBattery?.let { b ->
+            val level = b.level
+            if (level == null) "null" else "{level:$level,charging:${b.charging},tempC:${b.tempC},chargeCounterUah:${b.chargeCounterUah},cycle:${b.cycleCount}}"
+        } ?: "null"
+        js(jsCall("init({screenOn:$lastScreen,thermal:$thermal,powerSave:$lastPowerSave,battery:$battery})"))
     }
+
+    /** `level, charging, tempC, chargeCounterUah, cycle` as a JS argument list. */
+    private fun batteryArgs(reading: NativeSignals.BatteryReading, level: Int): String =
+        "$level,${reading.charging},${reading.tempC},${reading.chargeCounterUah},${reading.cycleCount}"
 
     /**
      * The core treats a native reading as stale after 5 minutes (so a dead app
      * cannot pin the tier). Thermal status rarely changes, so re-send it: an
-     * unchanged value is still proof that the shell is alive.
+     * unchanged value is still proof that the shell is alive. Battery level
+     * drifts slowly too, and its heartbeat is what keeps L3 alive all night.
      */
     private val heartbeat = object : Runnable {
         override fun run() {
             if (pageReady) {
                 lastThermal?.let { js(jsCall("thermal($it)")) }
                 lastPowerSave?.let { js(jsCall("powerSave($it)")) }
+                lastBattery?.level?.let { level ->
+                    js(jsCall("battery(${batteryArgs(lastBattery!!, level)})"))
+                }
             }
             ui.postDelayed(this, HEARTBEAT_MS)
         }

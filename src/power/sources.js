@@ -147,10 +147,17 @@ function telemetryFromApi (data) {
 /**
  * Reads battery/thermal/power-save signals for a Termux shell.
  *
+ * Battery priority is native -> sysfs -> termux-api -> null. This file covers
+ * only the lower two levels: the native reading is an ACTION_BATTERY_CHANGED
+ * report pushed by the Android shell and merged in manager.refreshPower(),
+ * which is why the tier cannot go blind inside the APK (where sysfs is
+ * SELinux-denied and Termux:API may be absent). The fallbacks still matter for
+ * standalone Termux use.
+ *
  * Real-device facts that shape this file (measured, not guessed):
  * - `/sys/class/power_supply` is EACCES for a normal uid on this ROM: SELinux
  *   denies it permanently without root. The sysfs branch therefore always
- *   fails there and `termux-battery-status` is the live path.
+ *   fails there and, outside the APK, `termux-battery-status` is the live path.
  * - Body temperature at idle is ~43 C, so absolute thresholds would pin the bot
  *   in L0 forever. We learn a baseline (median of the first minutes) and react
  *   to the delta.
@@ -467,7 +474,8 @@ class AndroidSignalSource {
       return battery.via === 'termux-api' ? 'live(termux-api)' : 'live'
     }
     // SELinux first: it is the platform truth on a non-root ROM, and it stays
-    // true even after Termux:API is installed.
+    // true even after Termux:API is installed. Inside the APK this status is
+    // never shown as long as the native battery report is fresh.
     if (isDenied(battery.sysfsError)) return 'unavailable(selinux)'
     if (battery.bridgeError) return 'unavailable(no-bridge)'
     return 'unavailable'

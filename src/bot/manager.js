@@ -66,8 +66,17 @@ class BotManager extends EventEmitter {
     }
     // M2 native shell reports. Kept separately from the polled sensor values so
     // a stale native reading can expire and fall back to sysfs/settings instead
-    // of pinning the tier forever if the app dies.
-    this.native = { thermal: null, thermalAt: 0, powerSave: null, powerSaveAt: 0 }
+    // of pinning the tier forever if the app dies. Battery is a whole reading
+    // (level/charging/tempC/chargeCounterUah/cycle) because the platform sends
+    // all of it in one broadcast.
+    this.native = {
+      thermal: null,
+      thermalAt: 0,
+      powerSave: null,
+      powerSaveAt: 0,
+      battery: null,
+      batteryAt: 0
+    }
     this.nativeStaleMs = 300000
     this.lastSignalTableJson = null
     this.uiClients = 0
@@ -506,8 +515,21 @@ class BotManager extends EventEmitter {
     })
     const nativeThermal = this.nativeValue('thermal')
     const nativePowerSave = this.nativeValue('powerSave')
+    const nativeBattery = this.nativeValue('battery')
+    const nativeLevel = nativeBattery && Number.isFinite(nativeBattery.level)
+      ? nativeBattery.level
+      : null
+    const nativeCharging = nativeBattery && typeof nativeBattery.charging === 'boolean'
+      ? nativeBattery.charging
+      : null
     const next = this.tier.update({
       ...this.lastSignals,
+      // Priority: native -> sysfs -> termux-api -> null. Inside the APK sysfs
+      // is SELinux-denied and there is no Termux:API, so this native reading
+      // is the only thing that keeps L3/L0 alive; a missing/stale native value
+      // falls back to whatever the poller could read (standalone Termux).
+      battery: nativeLevel !== null ? nativeLevel : this.lastSignals.battery,
+      charging: nativeCharging !== null ? nativeCharging : this.lastSignals.charging,
       // PowerManager's own calibrated status is the primary heat signal when
       // the app is alive; the sysfs delta stays as the fallback.
       thermalNative: nativeThermal,
@@ -541,6 +563,26 @@ class BotManager extends EventEmitter {
   reportNativePowerSave (on) {
     this.native.powerSave = Boolean(on)
     this.native.powerSaveAt = this.now()
+    const mode = this.refreshPower()
+    this.emitSignalTable()
+    return mode
+  }
+
+  /**
+   * M3 defect fix: native ACTION_BATTERY_CHANGED reading. `level` is percent,
+   * `charging` is the shell's two-field answer (null = ROM did not say),
+   * `tempC` is the cell temperature for cross-checking the thermal path.
+   * A fresh reading beats sysfs/termux-api; after `nativeStaleMs` it expires
+   * so a dead shell cannot hide a draining battery forever.
+   */
+  reportNativeBattery (payload = {}) {
+    const level = Number.isFinite(payload.level) ? payload.level : null
+    const charging = typeof payload.charging === 'boolean' ? payload.charging : null
+    const tempC = Number.isFinite(payload.tempC) ? payload.tempC : null
+    const chargeCounterUah = Number.isFinite(payload.chargeCounterUah) ? payload.chargeCounterUah : null
+    const cycle = Number.isInteger(payload.cycle) ? payload.cycle : null
+    this.native.battery = { level, charging, tempC, chargeCounterUah, cycle }
+    this.native.batteryAt = this.now()
     const mode = this.refreshPower()
     this.emitSignalTable()
     return mode
@@ -583,20 +625,36 @@ class BotManager extends EventEmitter {
     const avail = this.lastSignals.availability || {}
     const nativeThermal = this.nativeValue('thermal')
     const nativePowerSave = this.nativeValue('powerSave')
+    const nativeBattery = this.nativeValue('battery')
+    const nativeLevel = nativeBattery && Number.isFinite(nativeBattery.level)
+      ? nativeBattery.level
+      : null
+    const nativeCharging = nativeBattery && typeof nativeBattery.charging === 'boolean'
+      ? nativeBattery.charging
+      : null
     const screen = this.screen.snapshot()
     const mock = this.lastSignals.source === 'mock'
     const screenStatus = screen.clients === 0
       ? 'no_client'
       : (screen.source === 'ui' ? 'live' : 'unknown')
     return {
+      // Native reading first: sysfs is SELinux-denied inside the APK and
+      // Termux:API may not be installed, so `unavailable(selinux)` must not be
+      // printed while a real broadcast reading is flowing.
       battery: {
-        source: mock ? 'mock' : 'sysfs|termux-api',
-        status: avail.battery || 'unavailable',
+        source: nativeLevel !== null ? 'android-native' : (mock ? 'mock' : 'sysfs|termux-api'),
+        status: nativeLevel !== null ? 'live' : (avail.battery || 'unavailable'),
+        value: nativeLevel,
+        tempC: nativeLevel !== null ? (nativeBattery.tempC ?? null) : null,
         bridge: avail.bridge || null
       },
       // `capacity` and `status` are independent sysfs files, and both the L3
       // skip and the L3 exit depend on this one: report it separately.
-      charging: { source: mock ? 'mock' : 'sysfs|termux-api', status: avail.charging || 'unavailable' },
+      charging: {
+        source: nativeCharging !== null ? 'android-native' : (mock ? 'mock' : 'sysfs|termux-api'),
+        status: nativeCharging !== null ? 'live' : (avail.charging || 'unavailable'),
+        value: nativeCharging !== null ? nativeCharging : this.lastSignals.charging
+      },
       // `baseline: pending` means the delta is not trusted yet (first minutes
       // after start), so thermal cannot downgrade the tier - say it out loud.
       // Native PowerManager status wins when present: it is OEM-calibrated and
@@ -619,9 +677,10 @@ class BotManager extends EventEmitter {
   /** Raw sensor values + power telemetry for /api/health and the jsonl log. */
   powerSnapshot () {
     const s = this.lastSignals
+    const nativeBattery = this.nativeValue('battery')
     return {
-      battery: s.battery,
-      charging: s.charging,
+      battery: this.mergedBattery(),
+      charging: this.mergedCharging(),
       powerSave: s.powerSave,
       thermalCelsius: s.thermalCelsius == null ? null : s.thermalCelsius,
       thermalBaselineC: s.thermalBaselineC == null ? null : s.thermalBaselineC,
@@ -629,8 +688,22 @@ class BotManager extends EventEmitter {
       thermalZone: s.thermalZone || null,
       thermalNative: this.nativeValue('thermal'),
       powerSaveNative: this.nativeValue('powerSave'),
+      batteryNative: nativeBattery,
       telemetry: s.telemetry || null
     }
+  }
+
+  /** Priority: native -> sysfs -> termux-api -> null (same rule as refreshPower). */
+  mergedBattery () {
+    const native = this.nativeValue('battery')
+    if (native && Number.isFinite(native.level)) return native.level
+    return this.lastSignals.battery
+  }
+
+  mergedCharging () {
+    const native = this.nativeValue('battery')
+    if (native && typeof native.charging === 'boolean') return native.charging
+    return this.lastSignals.charging
   }
 
   emitSignalTable () {

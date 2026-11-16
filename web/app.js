@@ -135,6 +135,7 @@ function connectWs () {
     state.reconnectDelay = 500
     renderConn()
     reportScreen()
+    replayNative()
   })
 
   ws.addEventListener('message', (event) => {
@@ -319,6 +320,18 @@ const SIGNAL_LABELS = { battery: '电量', charging: '充电', thermal: '温度'
 function applySignals (table) {
   if (!table) return
   state.signalTable = table
+  // The table is the one place a fresh native battery reading shows up between
+  // tier changes (mode messages only fire on a switch), so mirror the numbers
+  // into the HUD as well.
+  if (table.battery && table.battery.value !== undefined && table.battery.value !== null) {
+    state.signals = state.signals || {}
+    state.signals.battery = table.battery.value
+  }
+  if (table.charging && table.charging.value !== undefined && table.charging.value !== null) {
+    state.signals = state.signals || {}
+    state.signals.charging = table.charging.value
+  }
+  if (state.signals) renderSignals()
   const missing = []
   const isUnavailable = (entry) => String((entry || {}).status || '').startsWith('unavailable')
   for (const [key, label] of Object.entries(SIGNAL_LABELS)) {
@@ -330,8 +343,8 @@ function applySignals (table) {
   const batteryStatus = String((table.battery || {}).status || '')
   if (batteryStatus.startsWith('unavailable')) {
     hints.push(batteryStatus.includes('selinux')
-      ? '电量 sysfs 被 SELinux 拒绝（无 root 无解），需走 Termux:API：pkg install termux-api 并安装 Termux:API App'
-      : '电量需安装 Termux:API（pkg install termux-api）且允许 Termux:API 读取电池')
+      ? '电量 sysfs 被 SELinux 拒绝：APK 内由系统广播原生上报（无需 Termux）；独立 Termux 运行才需要 Termux:API'
+      : '电量读不到：APK 内本应由系统广播上报，独立 Termux 运行需 termux-api 与 Termux:API App')
   }
   if (String((table.charging || {}).status || '').startsWith('unavailable')) {
     hints.push('充电状态读不到：低电量仍会断开，不会跳过 L3')
@@ -661,24 +674,70 @@ function reportScreen () {
 
 // Called from native via evaluateJavascript. Installed before init so an
 // early broadcast is never lost; `init` carries the current device state.
+// The last value of each is cached and replayed when the WS (re)opens: a
+// battery broadcast that arrived before the socket connected must not be lost
+// until the next 60 s heartbeat.
+const nativeCache = { thermal: null, powerSave: null, battery: null }
+
+function replayNative () {
+  if (nativeCache.thermal !== null) sendUp({ t: 'thermal', value: nativeCache.thermal })
+  if (nativeCache.powerSave !== null) sendUp({ t: 'powerSave', on: nativeCache.powerSave })
+  if (nativeCache.battery) sendUp(nativeCache.battery)
+}
+
 window.mcbotNative = {
   init (payload) {
     nativeShell = true
     const p = payload || {}
     if (typeof p.screenOn === 'boolean') applyScreen(p.screenOn, 'native')
     else if (state.connected) sendUp({ t: 'screen', on: state.screenOn })
-    if (Number.isInteger(p.thermal)) sendUp({ t: 'thermal', value: p.thermal })
-    if (typeof p.powerSave === 'boolean') sendUp({ t: 'powerSave', on: p.powerSave })
+    if (Number.isInteger(p.thermal)) {
+      nativeCache.thermal = p.thermal
+      sendUp({ t: 'thermal', value: p.thermal })
+    }
+    if (typeof p.powerSave === 'boolean') {
+      nativeCache.powerSave = p.powerSave
+      sendUp({ t: 'powerSave', on: p.powerSave })
+    }
+    if (p.battery && Number.isInteger(p.battery.level)) {
+      this.battery(
+        p.battery.level,
+        p.battery.charging,
+        p.battery.tempC,
+        p.battery.chargeCounterUah,
+        p.battery.cycle
+      )
+    }
   },
   screen (on) {
     nativeShell = true
     applyScreen(on, 'native')
   },
   thermal (value) {
-    if (Number.isInteger(value)) sendUp({ t: 'thermal', value })
+    if (!Number.isInteger(value)) return
+    nativeCache.thermal = value
+    sendUp({ t: 'thermal', value })
   },
   powerSave (on) {
-    if (typeof on === 'boolean') sendUp({ t: 'powerSave', on })
+    if (typeof on !== 'boolean') return
+    nativeCache.powerSave = on
+    sendUp({ t: 'powerSave', on })
+  },
+  // ACTION_BATTERY_CHANGED (sticky) -> BatteryManager extras. This is the only
+  // battery source inside the app: /sys/class/power_supply is SELinux-denied
+  // and Termux:API is absent. Without it L3/L0 never fire and an unplugged
+  // phone runs to 0% and shuts down hard.
+  battery (level, charging, tempC, chargeCounterUah, cycle) {
+    if (!Number.isInteger(level) || level < 0 || level > 100) return
+    nativeCache.battery = {
+      t: 'battery',
+      level,
+      charging: typeof charging === 'boolean' ? charging : null,
+      ...(Number.isFinite(tempC) ? { tempC } : {}),
+      ...(Number.isFinite(chargeCounterUah) ? { chargeCounterUah } : {}),
+      ...(Number.isInteger(cycle) ? { cycle } : {})
+    }
+    sendUp(nativeCache.battery)
   }
 }
 

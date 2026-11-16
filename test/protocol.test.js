@@ -94,3 +94,26 @@ test('thermal/powerSave upstream are additive v1 (M2 shell), protoVersion unchan
   const hello = helloMessage({ mode: 'L2' })
   assert.equal(hello.protoVersion, 1, 'new message types do not bump the version')
 })
+
+test('battery upstream is additive v1 (M3 native ACTION_BATTERY_CHANGED)', () => {
+  assert.deepEqual(
+    parseDown({ t: 'battery', level: 9, charging: false }),
+    { type: 'battery', payload: { level: 9, charging: false } }
+  )
+  assert.deepEqual(
+    parseDown({ t: 'battery', level: 80, charging: true, tempC: 35.2, chargeCounterUah: 4123000, cycle: 128 }),
+    { type: 'battery', payload: { level: 80, charging: true, tempC: 35.2, chargeCounterUah: 4123000, cycle: 128 } }
+  )
+  // charging null = the ROM did not answer; that is not "unplugged".
+  assert.deepEqual(
+    parseDown({ t: 'battery', level: 50 }),
+    { type: 'battery', payload: { level: 50, charging: null } }
+  )
+  assert.throws(() => parseDown({ t: 'battery' }), ProtocolError)
+  assert.throws(() => parseDown({ t: 'battery', level: 101 }), /out of range/)
+  assert.throws(() => parseDown({ t: 'battery', level: -1 }), /out of range/)
+  assert.throws(() => parseDown({ t: 'battery', level: 42.5 }), /integer 0-100/)
+  assert.throws(() => parseDown({ t: 'battery', level: 50, charging: 'yes' }), /must be a boolean or null/)
+  assert.throws(() => parseDown({ t: 'battery', level: 50, tempC: 999 }), /tempC out of range/)
+  assert.equal(helloMessage({}).protoVersion, 1, 'battery does not bump protoVersion')
+})

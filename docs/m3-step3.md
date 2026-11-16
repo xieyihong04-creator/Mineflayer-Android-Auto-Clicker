@@ -1,4 +1,4 @@
-# M3 第 3 步：应用内置 Node（已实现，4 条真机验收未验证）
+# M3 第 3 步：应用内置 Node（已实现，5 条真机验收未验证）
 
 探针（`android/probe`）已经在真机上证明 `libnode.so` 能加载、mineflayer 能在里面连上正版服并 spawn。第 3 步把这套东西搬进正式 App：**不再需要 Termux，也不再需要 `npm start`**。
 
@@ -20,11 +20,11 @@
 主进程 dev.mcbot.console
   MainActivity
     WebView → http://127.0.0.1:8765/          （M1 的页面，原样）
-    NativeSignals → window.mcbotNative        （M2 的注入，原样）
+    NativeSignals → window.mcbotNative        （screen/thermal/powerSave/battery，原生）
   BridgeService（specialUse FGS，常驻通知）
     每 15s GET /api/health
     90s 启动宽限 + 连续 4 次失败 + 60s 冷却 → 重新拉起 NodeService
-    最多 10 次，避免"一直崩一直重启"掩盖 bug
+    最多 10 次；耗尽 → 高优先级通知告警并停止看门狗（重开 App 才清零重试）
         │ startService
         ▼
 进程 dev.mcbot.console:node
@@ -94,7 +94,48 @@ offline 登录 → kicked: "Not authenticated with Minecraft.net"     ← 正版
 
 ---
 
-## 四、体积与构建
+## 三·补、电量信号回归：原生广播修回（第 3 步的缺陷，不是下一步）
+
+### 已证明的事实，不是猜测
+
+真机实测：
+
+```
+$ ls -ld /sys/class/power_supply
+drwxr-xr-x. 2 root root ...
+$ ls /sys/class/power_supply
+ls: cannot open directory '/sys/class/power_supply': Permission denied
+```
+
+目录权限对普通 uid 是**可读**的，仍然 EACCES —— 这是 SELinux（untrusted_app）拒绝，不 root 无解。Node 搬进 App 后没有 Termux:API 可退，于是 `battery = null` 是**必然**结果。后果不是少一行显示：`tier.js` 里 `battery === null` 走的是"未知按 L1"，<10% 的 L3 主动断开和 <20% 的 L0 降档都**永远不会触发**。不插电整夜跑 = 跑到 0% 硬关机，锂电过放，机器人连一句"我要没电了"都发不出来。
+
+这是同一类缺陷的第三次：屏幕（83 个测试全绿）、温度（155 个绿）、电量（183 个绿）——测试全绿只证明"给定信号后逻辑对"，**没有一条测试能证明"这个环境下信号真的拿得到"**。
+
+> 通用教训：**每次更换运行环境，必须重新验证每一个外部信号，不能只验业务逻辑。** 换 Termux → App、换机、换 ROM、改 targetSdk，都要对 `/api/health` 的五行信号逐条确认 `status=live`。
+
+### 修法：五个信号全部原生，`protoVersion` 仍为 1，档位状态机一行不改
+
+| 信号 | 原生来源 | 说明 |
+|---|---|---|
+| 电量 | `ACTION_BATTERY_CHANGED`（sticky）`EXTRA_LEVEL/EXTRA_SCALE` | 零权限；注册即得初值，变更即推送 |
+| 充电 | `EXTRA_PLUGGED` + `EXTRA_STATUS` | **两个字段独立**；冲突（插着但 DISCHARGING/NOT_CHARGING）= 不算充电，宁可走 L3 |
+| 电池温度 | `EXTRA_TEMPERATURE`（0.1 °C） | 与 thermal 交叉校验，超出 −30..100 °C 视为 ROM 垃圾值 |
+| 电荷量 | `BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER` | 有就带，用于后续容量趋势 |
+| 循环次数 | `BATTERY_PROPERTY_CYCLE`（API 34+） | 有就带 |
+
+链路：`NativeSignals`（注册 + 解析）→ `MainActivity` 注入 `window.mcbotNative.battery(level, charging, tempC, chargeCounterUah, cycle)` → `web/app.js` 上行 `{t:'battery', level, charging, tempC?, ...}` → `protocol.js` 校验 → `server.js` 派发 → `BotManager.reportNativeBattery()`。
+
+- 上行只是**新增类型**，`DOWN_TYPES` 加 `battery`，`protoVersion` 保持 1，所有既有消息形状不变。
+- 变更即推 + **60 s 心跳**（与 thermal/powerSave 同一套），心跳是"外壳还活着"的证明。
+- 5 分钟过期回落：外壳死掉后 native 值失效，`refreshPower()` 退回轮询值（standalone Termux 仍是 sysfs → termux-api → null）。
+- `sources.js` 的优先级：**native → sysfs → termux-api → null**；后两级为独立 Termux 用法保留。
+- `signalTable()` 在 native 新鲜时把 `battery`/`charging` 显示为 `source=android-native, status=live`，不再误报 `unavailable(selinux)`；`/api/health` 的 `power.batteryNative` 带原始读数。
+
+### 重启上限耗尽：显式告警并停止
+
+看门狗第 10 次重启失败后不再静默重试：新建高优先级通道 `核心故障告警` 发一条通知（"已连续重启 10 次仍无法恢复，自动重启已停止"），并**停止看门狗**。用户重新打开 App（`onStartCommand`）才清零计数、重新拉起一次——把"再试一次"交给明确的人为动作，而不是装作还在工作。
+
+---
 
 | 项 | 数值 | 怎么得到 |
 |---|---|---|
@@ -109,9 +150,9 @@ CI（`.github/workflows/android-build.yml`）的 `apk` job 现在也装 `ndk;27.
 
 ---
 
-## 五、验收（4 条，全部未验证）
+## 五、验收（5 条，全部未验证）
 
-设备侧判定，按顺序做。**编译通过不等于能用**，这 4 条要装到手机上才算数。
+设备侧判定，按顺序做。**编译通过不等于能用**，这 5 条要装到手机上才算数。
 
 | # | 场景 | 判定方式 | 状态 |
 |---|---|---|---|
@@ -119,6 +160,9 @@ CI（`.github/workflows/android-build.yml`）的 `apk` job 现在也装 `ndk;27.
 | 2 | 锁屏 30 分钟不掉线 | 熄屏 30 分钟后回到 App：HUD 仍 `online`、`onlineSince` 连续；`/api/health` 的 `clients` 恢复 ≥1；期间无重连日志 | 未验证 |
 | 3 | 手动杀 `:node` 自愈 | `adb shell ps -A \| grep mcbot` 找 `:node` pid → `adb shell kill <pid>` → 60–120 s 内 `/api/health` 恢复响应，`files/logs/node-boot.log` 出现第二次 `bundle ready`；页面自动回 `online` | 未验证 |
 | 4 | 覆盖安装 token 不丢 | `adb install -r` 新 APK（bundle 摘要变化会重解压）→ 打开 App，登录卡片显示 `已登录：<名字>`，不弹设备码 | 未验证 |
+| 5 | 卸掉 Termux 后五信号仍 live | **强制停止 Termux:API（或直接卸载 Termux）** → 打开 App，`curl -s 127.0.0.1:8765/api/health` 里 `signals` 的 `battery / charging / thermal / screen / powerSave` 五行 `status` 全部为 `live`，且 `power.battery` 是真实百分比；拔掉充电器等一个电量广播，`charging` 在 60 s 内变为 `false` | 未验证 |
+
+第 5 条是这次缺陷的直接回归测试：它验证的不是"逻辑对不对"，而是"这个环境下信号真的拿得到"。第 2、3 条同时观察 `power.battery` 是否随时间下降、`charging` 是否随插拔翻转——只看到 `live` 还不够，数值要**跟着物理世界变**。
 
 调试入口（都是文件，nodejs-mobile 的 stdout 不进 logcat）：
 
@@ -134,21 +178,21 @@ adb shell run-as dev.mcbot.console cat files/logs/crash.log
 ## 六、已知限制 / 风险
 
 - **Node 18 已 EOL**（nodejs-mobile 只有 v18.20.4），mineflayer 声明 `>=22`。实测可用，但上游任何一次升级都可能踩 18 不支持的语法/API。要长期用必须锁 `package-lock.json` 并冻结升级。
-- **挂住但不退出的 Node 不会被强杀。** 主进程没有安全的跨进程 kill API；`NodeService` 只在 Node 退出时自杀，看门狗负责拉起"进程已经没了"的情况。若 Node 活着但 HTTP 不响应，表现为页面离线 + 看门狗计数，不会无限重启（10 次上限）。
+- **挂住但不退出的 Node 不会被强杀。** 主进程没有安全的跨进程 kill API；`NodeService` 只在 Node 退出时自杀，看门狗负责拉起"进程已经没了"的情况。若 Node 活着但 HTTP 不响应，表现为页面离线 + 看门狗计数；到 10 次上限后**发高优先级告警并停止重启**，重新打开 App 才清零重试。
 - **首次启动慢**：解压 145 MB 后才能起 Node，页面会显示"正在启动内置 Node 核心…（n/120）"。
 - **APK ~80 MB**：libnode.so 占 62 MB，无法回避（除非改方案）。
 - **两个进程的内存都在**：主进程（WebView）+ `:node`（Node + mineflayer）。低内存机型上 `:node` 更容易被回收，靠看门狗自愈。
 - **Doze / OEM 杀后台**：FGS + 电池优化白名单是唯一手段，已在应用内引导；HyperOS 的自启动/后台弹出权限仍需手动给。
 - **功耗增量仍未测量**：本步没有做任何省电优化，也没有 A/B 数据。`<0.5%/h` 依旧是假设。
-- **电量信号在应用内可能整条断掉（本步带出的回退，未修）**：`src/power/sources.js` 的路径是 sysfs → `termux-battery-status`。应用自己的进程（untrusted_app, targetSdk 35）读 `/sys/class/power_supply/*/capacity` 大概率被 SELinux 拒绝，而 App 里没有 Termux:API 可退——结果 `signals.battery.status = unavailable(selinux)`，L3（<10% 主动断开）与 L0（<20% 降档）就都不会触发。探针与本地都无法验证这一点，必须真机看 `/api/health` 的 `power.battery` 是否非 null。
-  修法（下一步，不混在本步里）：沿用 M2 的做法给原生桥**再加一条上行** `battery {level, charging}`（`PowerManager`/`BatteryManager` 或 `ACTION_BATTERY_CHANGED`），`protoVersion` 仍为 1，`sources.js` 的 native 分支优先。注意这是**新增**信号，不改档位状态机。
+- **电量信号已改为原生广播（本节三·补）**：sysfs 在应用内必然 `EACCES`，因此 `ACTION_BATTERY_CHANGED` 是唯一来源。若 ROM 连该广播都不发（极罕见），`battery` 仍会回落到 `null` 并显示 `unavailable`——那时档位按"未知电量"处理（L1），**不会**假装有电；这属于必须换机验证的剩余风险。
+- **原生电池与 thermal 是两条独立通道**：`tempC` 只做交叉校验，不参与档位判定；L0 的热判据仍是 `PowerManager` thermal status（原生）或 sysfs delta（回落）。
 
 ---
 
 ## 七、本地怎么复跑
 
 ```bash
-npm test                                   # 183 个测试（含 12 个地址解析用例）
+npm test                                   # 187 个测试（含 12 个地址解析、5 个原生电池用例）
 cd android && ./gradlew :app:bundleNode     # 只验证 bundle（不下载 libnode）
 ./gradlew :app:assembleDebug                # 出 APK（首次会下载 libnode ~100 MB）
 ./gradlew :probe:assembleDebug              # 探针仍可单独构建

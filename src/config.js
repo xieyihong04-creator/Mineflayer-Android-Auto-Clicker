@@ -378,6 +378,14 @@ class ConfigStore {
     return config
   }
 
+  /** Removing a waypoint needs replace semantics: save() deep-merges maps, so
+      a patch would resurrect the key that was just deleted. */
+  replaceWaypoints (map) {
+    this.config.waypoints = deepClone(map)
+    this.persist()
+    return this.config
+  }
+
   persist () {
     const dir = path.dirname(this.filePath)
     fs.mkdirSync(dir, { recursive: true })

@@ -41,7 +41,7 @@ sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools"
 | `NativeSignals.kt` | `ACTION_SCREEN_ON/OFF`、`addThermalStatusListener`、`ACTION_POWER_SAVE_MODE_CHANGED` |
 | `res/xml/network_security_config.xml` | 只对 `127.0.0.1`/`localhost` 允许明文，其余一律禁止 |
 
-信号注入走 `evaluateJavascript`，目标对象由页面自己安装（`web/app.js` 里的 `window.mcbotNative`）：
+信号注入走 `evaluateJavascript`，目标对象由页面自己安装（`web/index.html` 里的 `window.mcbotNative`）：
 
 ```js
 window.mcbotNative.init({ screenOn, thermal, powerSave })  // 页面加载完成时

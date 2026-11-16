@@ -973,7 +973,7 @@ class BotManager extends EventEmitter {
     if (!this.config.waypoints[name]) return { ok: false, reason: 'unknown_waypoint' }
     const next = { ...this.config.waypoints }
     delete next[name]
-    this.configStore.save({ waypoints: next })
+    this.configStore.replaceWaypoints(next)
     return { ok: true }
   }
 

@@ -56,13 +56,13 @@ src/bot/respawn.js      F9 自动重生 + 回挂机点 + 连续死亡熔断
 src/bot/droppoint.js    丢弃点站立安全 + 可达性预检
 src/bridge/protocol.js  协议 v1 校验与上行构造
 src/bridge/server.js    WS + 静态页面 + 指令分发
-web/                    移动端网页控制台（无构建、无外部依赖）
+web/index.html          移动端网页控制台（单文件液态玻璃 UI，真实协议 v1 桥接，无构建、无外部依赖）
 android/                M2 外壳 + M3 第 3 步：WebView + specialUse FGS + 原生信号桥
 android/app/            NodeService(:node 进程) / NodeBundle / libnode JNI 壳
 android/libnode.gradle.kts  :app 与 :probe 共用的 libnode.so 下载（版本/ABI 单一来源）
 android/probe/          M3 探针：libnode + JNI 最小工程，独立 APK，不进正式包
 docs/                   真机验收清单（m3-probe.md / m3-step3.md）
-test/                   183 个 node:test 用例
+test/                   188 个 node:test 用例
 ```
 
 ## P0 验收对照

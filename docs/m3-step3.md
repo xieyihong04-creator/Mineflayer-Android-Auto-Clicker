@@ -123,7 +123,7 @@ ls: cannot open directory '/sys/class/power_supply': Permission denied
 | 电荷量 | `BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER` | 有就带，用于后续容量趋势 |
 | 循环次数 | `BATTERY_PROPERTY_CYCLE`（API 34+） | 有就带 |
 
-链路：`NativeSignals`（注册 + 解析）→ `MainActivity` 注入 `window.mcbotNative.battery(level, charging, tempC, chargeCounterUah, cycle)` → `web/app.js` 上行 `{t:'battery', level, charging, tempC?, ...}` → `protocol.js` 校验 → `server.js` 派发 → `BotManager.reportNativeBattery()`。
+链路：`NativeSignals`（注册 + 解析）→ `MainActivity` 注入 `window.mcbotNative.battery(level, charging, tempC, chargeCounterUah, cycle)` → `web/index.html` 上行 `{t:'battery', level, charging, tempC?, ...}` → `protocol.js` 校验 → `server.js` 派发 → `BotManager.reportNativeBattery()`。
 
 - 上行只是**新增类型**，`DOWN_TYPES` 加 `battery`，`protoVersion` 保持 1，所有既有消息形状不变。
 - 变更即推 + **60 s 心跳**（与 thermal/powerSave 同一套），心跳是"外壳还活着"的证明。
@@ -203,7 +203,7 @@ adb shell run-as dev.mcbot.console cat files/logs/crash.log
 ## 七、本地怎么复跑
 
 ```bash
-npm test                                   # 187 个测试（含 12 个地址解析、5 个原生电池用例）
+npm test                                   # 188 个测试（含 12 个地址解析、5 个原生电池用例）
 cd android && ./gradlew :app:bundleNode     # 只验证 bundle（不下载 libnode）
 ./gradlew :app:assembleDebug                # 出 APK（首次会下载 libnode ~100 MB）
 ./gradlew :probe:assembleDebug              # 探针仍可单独构建

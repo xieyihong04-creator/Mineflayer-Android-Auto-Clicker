@@ -130,8 +130,9 @@ test('bridge: serves the web UI and health endpoint', async (t) => {
   const page = await httpGet(server.port, '/')
   assert.equal(page.status, 200)
   assert.match(page.body, /挂机控制台/)
-  const css = await httpGet(server.port, '/style.css')
-  assert.equal(css.status, 200)
+  // The console is one self-contained file: CSS and JS are inlined, so there
+  // is no separate stylesheet to fetch.
+  assert.match(page.body, /window\.mcbotNative/)
   const health = await httpGet(server.port, '/api/health')
   assert.equal(JSON.parse(health.body).ok, true)
   const missing = await httpGet(server.port, '/nope.js')

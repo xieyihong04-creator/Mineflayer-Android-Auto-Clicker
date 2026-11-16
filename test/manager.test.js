@@ -4,7 +4,10 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const { BotManager } = require('../src/bot/manager')
 const { PowerTierController } = require('../src/power/tier')
-const { deepMerge } = require('../src/config')
+const { deepMerge, ConfigStore } = require('../src/config')
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
 const { FakeBot, makeConfig, fakeLogger, navStub, resolveStub } = require('./helpers')
 
 function makeManager (configPatch = {}, { createBot, nav, now, resolve } = {}) {
@@ -180,6 +183,29 @@ test('P1: waypoints save and go through the config store', async () => {
   manager.bot = null
   const goto = await manager.goWaypoint('afk')
   assert.equal(goto.ok, false, 'offline navigation is refused')
+})
+
+test('P1: deleting a waypoint really removes it (merge must not resurrect it)', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcbot-wp-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const file = path.join(dir, 'config.json')
+  const store = new ConfigStore(file)
+  store.load()
+  store.save({ waypoints: { afk: { x: 0, y: 64, z: 0 }, box: { x: 3, y: 64, z: 4 } } })
+  const manager = new BotManager({
+    configStore: store,
+    logger: fakeLogger(),
+    tier: new PowerTierController({ config: store.config }),
+    nav: navStub(),
+    createBot: () => new FakeBot(),
+    networkWatcher: { start () {}, stop () {} },
+    resolve: resolveStub()
+  })
+  t.after(() => manager.destroy())
+  assert.equal(manager.deleteWaypoint('box').ok, true)
+  assert.deepEqual(Object.keys(store.config.waypoints), ['afk'])
+  assert.deepEqual(Object.keys(new ConfigStore(file).load().waypoints), ['afk'], 'persisted file keeps the deletion')
+  assert.equal(manager.deleteWaypoint('box').ok, false)
 })
 
 test('F2: state snapshot carries hp/food/pos/yaw/nav/mode/online', (t) => {
